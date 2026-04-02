@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MeshCore Dashboard</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root {
             --bg: #1e1f26;
@@ -481,112 +479,6 @@
         .signal-bars .bar.active.excellent { background: var(--green); }
         .signal-bars .bar.active.good      { background: var(--yellow); }
         .signal-bars .bar.active.poor      { background: var(--red); }
-
-        /* ── Node map ──────────────────────────────────────────── */
-        #map-section { margin-top: 32px; }
-        #map-toggle {
-            display: flex; align-items: center; justify-content: space-between;
-            cursor: pointer; user-select: none;
-            margin-bottom: 0;
-            padding-bottom: 8px;
-            border-bottom: 1px solid var(--border);
-        }
-        #map-toggle .section-title { margin: 0; padding: 0; border: none; }
-        #map-toggle .toggle-arrow {
-            font-size: 0.7rem; color: var(--muted);
-            transition: transform 0.2s;
-        }
-        #map-toggle .toggle-arrow.open { transform: rotate(90deg); }
-        #map-body {
-            overflow: hidden; transition: max-height 0.3s ease, opacity 0.3s ease;
-            max-height: 0; opacity: 0;
-        }
-        #map-body.open { max-height: 500px; opacity: 1; margin-top: 12px; }
-        #map-container {
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-            overflow: hidden;
-            height: 300px;
-        }
-        #map-container .leaflet-popup-content-wrapper {
-            background: var(--surface);
-            color: var(--text);
-            border-radius: 8px;
-            box-shadow: 0 2px 12px rgba(0,0,0,0.4);
-        }
-        #map-container .leaflet-popup-tip { background: var(--surface); }
-        #map-container .leaflet-popup-content { font-size: 0.82rem; line-height: 1.5; }
-        #map-container .leaflet-popup-content b { color: var(--accent); }
-        #map-empty {
-            padding: 24px 16px;
-            color: var(--muted);
-            font-size: 0.85rem;
-            font-style: italic;
-            text-align: center;
-            background: var(--surface);
-            border: 1px solid var(--border);
-            border-radius: var(--radius);
-        }
-
-        /* ── Location editor modal ─────────────────────────────── */
-        #loc-overlay {
-            display: none; position: fixed; inset: 0; z-index: 500;
-            background: rgba(0,0,0,0.55); align-items: center; justify-content: center;
-        }
-        #loc-overlay.open { display: flex; }
-        #loc-modal {
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: var(--radius); padding: 20px 24px;
-            width: 440px; max-width: 94vw; max-height: 80vh;
-            display: flex; flex-direction: column; gap: 14px;
-            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-        }
-        #loc-modal h3 { font-size: 1rem; font-weight: 600; }
-        #loc-list { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
-        .loc-row {
-            display: flex; align-items: center; gap: 8px;
-            font-size: 0.85rem;
-        }
-        .loc-row .loc-name {
-            flex: 0 0 110px; font-weight: 600; overflow: hidden;
-            text-overflow: ellipsis; white-space: nowrap;
-        }
-        .loc-row input {
-            flex: 1; min-width: 0; font-size: 0.82rem; padding: 4px 8px;
-            border-radius: 6px; border: 1px solid var(--border);
-            background: var(--bg); color: var(--text); outline: none;
-        }
-        .loc-row input:focus { border-color: var(--accent); }
-        .loc-row input::placeholder { color: var(--muted); }
-        .loc-row .loc-clear-btn {
-            background: none; border: 1px solid var(--border); color: var(--muted);
-            border-radius: 4px; padding: 2px 6px; font-size: 0.72rem;
-            cursor: pointer; flex-shrink: 0; transition: color 0.15s;
-        }
-        .loc-row .loc-clear-btn:hover { color: var(--red); border-color: var(--red); }
-        #loc-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
-        #loc-actions button {
-            font-size: 0.82rem; padding: 5px 14px; border-radius: 6px;
-            cursor: pointer; border: 1px solid var(--border);
-            background: var(--surface); color: var(--text);
-        }
-        #loc-actions button:hover { background: var(--border); }
-        #loc-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
-        #loc-actions button.primary:hover { opacity: 0.85; }
-        #loc-export-msg { font-size: 0.72rem; color: var(--green); display: none; }
-        #map-edit-btn {
-            font-size: 0.72rem; color: var(--muted); cursor: pointer;
-            margin-left: 10px; text-decoration: none;
-        }
-        #map-edit-btn:hover { color: var(--accent); }
-
-        .node-loc-btn {
-            background: none; border: none; cursor: pointer;
-            font-size: 0.82rem; padding: 2px 4px; line-height: 1;
-            opacity: 0.5; transition: opacity 0.15s;
-        }
-        .node-loc-btn:hover { opacity: 1; }
     </style>
 </head>
 <body>
@@ -613,32 +505,6 @@
             <h2 class="section-title">Contacts</h2>
             <div id="contacts-grid"></div>
         </section>
-    </div>
-
-    <!-- ── Node map ───────────────────────────────────────────── -->
-    <div id="map-section">
-        <div id="map-toggle" onclick="_toggleMap()">
-            <h2 class="section-title">🗺️ Node Map <a id="map-edit-btn" onclick="event.stopPropagation();_openLocEditor()" title="Edit node locations">📍 Edit locations</a></h2>
-            <span class="toggle-arrow" id="map-arrow">▶</span>
-        </div>
-        <div id="map-body">
-            <div id="map-empty">No node locations set yet. Click <b>📍 Edit locations</b> above or the 📍 icon on any node card to add coordinates.</div>
-            <div id="map-container" style="display:none"></div>
-        </div>
-    </div>
-
-    <!-- ── Location editor modal ─────────────────────────────── -->
-    <div id="loc-overlay" onclick="if(event.target===this)_closeLocEditor()">
-        <div id="loc-modal">
-            <h3>📍 Edit Node Locations</h3>
-            <div id="loc-list"></div>
-            <span id="loc-export-msg">✓ Copied to clipboard</span>
-            <div id="loc-actions">
-                <button onclick="_exportLocations()" title="Copy as JSON for meshcore_locations.json">📋 Export JSON</button>
-                <button onclick="_closeLocEditor()">Cancel</button>
-                <button class="primary" onclick="_saveLocations()">Save</button>
-            </div>
-        </div>
     </div>
 
     <!-- ── Inbox history ─────────────────────────────────────── -->
@@ -868,10 +734,7 @@
         <div class="node-card" data-node="${escHtml(nodeName)}">
           <div class="node-header">
             <span class="node-name">${escHtml(nodeName)}</span>
-            <span style="display:flex;align-items:center;gap:6px">
-              <button class="node-loc-btn" onclick="event.stopPropagation();_openLocEditor('${escHtml(nodeName).replace(/'/g, "\\'")}')" title="Edit location">📍</button>
-              <span class="node-badge" data-node="${escHtml(nodeName)}">${badgeHtml}</span>
-            </span>
+            <span class="node-badge" data-node="${escHtml(nodeName)}">${badgeHtml}</span>
           </div>
           <div class="node-metrics">${metricsHtml}</div>
         </div>`;
@@ -1262,9 +1125,6 @@
                 const inboxDev = inboxIdx ? byIdx[inboxIdx] : (all.find(d => d.Name === "Mesh Inbox") || null);
                 loadInboxHistory(inboxDev);
 
-                // Update node map if any nodes have GPS coordinates
-                _updateMap();
-
                 const now = new Date();
                 document.getElementById("last-updated").textContent =
                     `Updated ${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
@@ -1276,226 +1136,13 @@
         }
 
         // Init: load JSON files, render snapshot instantly, then start live refresh loop.
-        let _manualLocations = {};  // node_name → {lat, lon} from meshcore_locations.json
-
-        async function _loadManualLocations() {
-            try {
-                const r = await fetch("/templates/meshcore_locations.json?_=" + Date.now());
-                if (r.ok) _manualLocations = await r.json();
-            } catch (_) { }
-        }
-
-        Promise.all([_loadChannelNames(), _loadDeviceMap(), _loadManualLocations()]).then(async () => {
+        Promise.all([_loadChannelNames(), _loadDeviceMap()]).then(async () => {
             _deviceMapFreshFromInit = true;
             _populateComposeTargets();
             await initialRender();   // instant — no API call
-            _updateMap();            // show empty state or pins from localStorage/file immediately
             loadData();              // kick off first live refresh immediately
             setInterval(loadData, 10000);
         });
-
-        // ── Node map (Leaflet) ────────────────────────────────────────────────────
-        let _map = null;
-        let _mapMarkers = [];  // L.marker instances
-        let _mapFitted = false;  // only auto-fit bounds on first render
-        let _mapOpen = false;
-
-        // Merge location sources: localStorage > meshcore_locations.json > device map GPS
-        function _getNodeLocation(name, node) {
-            // 1. localStorage overrides (user-edited from dashboard)
-            try {
-                const stored = JSON.parse(localStorage.getItem("mc_locations") || "{}");
-                if (stored[name] && stored[name].lat && stored[name].lon) return stored[name];
-            } catch (_) { }
-            // 2. Manual file fallback
-            if (_manualLocations[name] && _manualLocations[name].lat && _manualLocations[name].lon)
-                return _manualLocations[name];
-            // 3. Device map GPS from node
-            if (node && node.lat && node.lon && !(node.lat === 0 && node.lon === 0))
-                return { lat: node.lat, lon: node.lon };
-            return null;
-        }
-
-        function _toggleMap() {
-            _mapOpen = !_mapOpen;
-            const body = document.getElementById("map-body");
-            const arrow = document.getElementById("map-arrow");
-            body.classList.toggle("open", _mapOpen);
-            arrow.classList.toggle("open", _mapOpen);
-            if (_mapOpen) {
-                // Initialize / refresh map now that the container is visible
-                _updateMap();
-                if (_map) setTimeout(() => _map.invalidateSize(), 350);
-            }
-        }
-
-        function _updateMap() {
-            if (typeof L === "undefined") return;  // Leaflet not loaded
-
-            const located = [];
-            const selfName = (_deviceMap && _deviceMap.self) || null;
-            const nodes = (_deviceMap && _deviceMap.nodes) || {};
-            for (const [name, node] of Object.entries(nodes)) {
-                const loc = _getNodeLocation(name, node);
-                if (loc) {
-                    const online = node.status ? _slotOnline(node.status) : false;
-                    const isSelf = name === selfName;
-                    located.push({ name, lat: loc.lat, lon: loc.lon, online, isSelf });
-                }
-            }
-            // Also check localStorage/manual locations for nodes not yet in device map
-            try {
-                const stored = JSON.parse(localStorage.getItem("mc_locations") || "{}");
-                for (const [name, loc] of Object.entries(stored)) {
-                    if (loc.lat && loc.lon && !located.find(n => n.name === name)) {
-                        located.push({ name, lat: loc.lat, lon: loc.lon, online: false, isSelf: false });
-                    }
-                }
-            } catch (_) { }
-            for (const [name, loc] of Object.entries(_manualLocations)) {
-                if (name === "_comment") continue;
-                if (loc.lat && loc.lon && !located.find(n => n.name === name)) {
-                    located.push({ name, lat: loc.lat, lon: loc.lon, online: false, isSelf: false });
-                }
-            }
-
-            const emptyMsg = document.getElementById("map-empty");
-            const container = document.getElementById("map-container");
-            if (!located.length) {
-                emptyMsg.style.display = "";
-                container.style.display = "none";
-                return;
-            }
-            emptyMsg.style.display = "none";
-            container.style.display = "";
-
-            // Don't initialize Leaflet on a hidden container — wait until the panel is open
-            if (!_mapOpen) return;
-
-            if (!_map) {
-                _map = L.map("map-container", {
-                    zoomControl: true,
-                    attributionControl: true,
-                });
-                L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-                    subdomains: "abcd",
-                    maxZoom: 19,
-                }).addTo(_map);
-            }
-
-            for (const m of _mapMarkers) _map.removeLayer(m);
-            _mapMarkers = [];
-
-            const bounds = [];
-            for (const { name, lat, lon, online, isSelf } of located) {
-                const color = isSelf ? "#4e9af1" : online ? "#4caf7d" : "#e05555";
-                const icon = L.divIcon({
-                    className: "",
-                    html: `<div style="
-                        width:14px;height:14px;border-radius:50%;
-                        background:${color};border:2px solid #fff;
-                        box-shadow:0 0 6px ${color}88;
-                    "></div>`,
-                    iconSize: [14, 14],
-                    iconAnchor: [7, 7],
-                });
-                const label = isSelf ? `<b>${escHtml(name)}</b> (self)` : `<b>${escHtml(name)}</b>`;
-                const status = isSelf ? "Connected" : online ? "Online" : "Offline";
-                const editLink = `<a href="#" onclick="event.preventDefault();_openLocEditor('${escHtml(name)}')" style="color:#4e9af1;font-size:0.75rem">✏️ Edit location</a>`;
-                const marker = L.marker([lat, lon], { icon })
-                    .bindPopup(`${label}<br>${status}<br><small>${lat.toFixed(5)}, ${lon.toFixed(5)}</small><br>${editLink}`)
-                    .addTo(_map);
-                _mapMarkers.push(marker);
-                bounds.push([lat, lon]);
-            }
-
-            if (!_mapFitted && bounds.length) {
-                _mapFitted = true;
-                if (bounds.length === 1) {
-                    _map.setView(bounds[0], 14);
-                } else {
-                    _map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-                }
-            }
-        }
-
-        // ── Location editor ─────────────────────────────────────────────────────
-        function _openLocEditor(focusNode) {
-            const overlay = document.getElementById("loc-overlay");
-            const list = document.getElementById("loc-list");
-            if (!_deviceMap || !_deviceMap.nodes) return;
-
-            let stored = {};
-            try { stored = JSON.parse(localStorage.getItem("mc_locations") || "{}"); } catch (_) { }
-
-            const allNames = Object.keys(_deviceMap.nodes);
-            list.innerHTML = allNames.map(name => {
-                const loc = _getNodeLocation(name, _deviceMap.nodes[name]);
-                const lat = loc ? loc.lat : "";
-                const lon = loc ? loc.lon : "";
-                return `<div class="loc-row">
-                    <span class="loc-name" title="${escHtml(name)}">${escHtml(name)}</span>
-                    <input type="number" step="any" placeholder="Latitude" data-node="${escHtml(name)}" data-field="lat" value="${lat}">
-                    <input type="number" step="any" placeholder="Longitude" data-node="${escHtml(name)}" data-field="lon" value="${lon}">
-                    <button class="loc-clear-btn" onclick="_clearLocRow(this)" title="Clear location">✕</button>
-                </div>`;
-            }).join("");
-
-            overlay.classList.add("open");
-            document.getElementById("loc-export-msg").style.display = "none";
-
-            // Focus the row for the requested node
-            if (focusNode) {
-                const inp = list.querySelector(`input[data-node="${CSS.escape(focusNode)}"][data-field="lat"]`);
-                if (inp) setTimeout(() => inp.focus(), 100);
-            }
-        }
-
-        function _closeLocEditor() {
-            document.getElementById("loc-overlay").classList.remove("open");
-        }
-
-        function _saveLocations() {
-            const inputs = document.querySelectorAll("#loc-list input");
-            const locs = {};
-            for (const inp of inputs) {
-                const name = inp.dataset.node;
-                const field = inp.dataset.field;
-                if (!locs[name]) locs[name] = {};
-                const val = parseFloat(inp.value);
-                if (!isNaN(val)) locs[name][field] = val;
-            }
-            // Only keep entries with both lat and lon
-            const clean = {};
-            for (const [name, loc] of Object.entries(locs)) {
-                if (loc.lat !== undefined && loc.lon !== undefined) {
-                    clean[name] = { lat: loc.lat, lon: loc.lon };
-                }
-            }
-            localStorage.setItem("mc_locations", JSON.stringify(clean));
-            _closeLocEditor();
-            _mapFitted = false;  // re-fit to new bounds
-            _updateMap();
-            if (_mapOpen && _map) setTimeout(() => _map.invalidateSize(), 100);
-        }
-
-        function _exportLocations() {
-            let stored = {};
-            try { stored = JSON.parse(localStorage.getItem("mc_locations") || "{}"); } catch (_) { }
-            // Merge: start from file locations, overlay with localStorage
-            const merged = Object.assign({}, _manualLocations, stored);
-            // Remove the _comment key if present
-            delete merged._comment;
-            const json = JSON.stringify(merged, null, 4);
-            navigator.clipboard.writeText(json).then(() => {
-                const msg = document.getElementById("loc-export-msg");
-                msg.style.display = "";
-                setTimeout(() => msg.style.display = "none", 3000);
-            }).catch(() => {
-                prompt("Copy this JSON into meshcore_locations.json:", json);
-            });
-        }
 
         // ── Compose bar ───────────────────────────────────────────────────────────
 
@@ -1803,16 +1450,6 @@
         window._toggleEmojiPicker  = _toggleEmojiPicker;
         window._filterEmoji        = _filterEmoji;
         window._replyTo            = _replyTo;
-        window._toggleMap          = _toggleMap;
-        window._openLocEditor      = _openLocEditor;
-        window._closeLocEditor     = _closeLocEditor;
-        window._saveLocations      = _saveLocations;
-        window._exportLocations    = _exportLocations;
-        window._clearLocRow        = function(btn) {
-            const row = btn.closest(".loc-row");
-            if (!row) return;
-            row.querySelectorAll("input").forEach(inp => inp.value = "");
-        };
     })();
     </script>
 </body>

@@ -1,4 +1,0 @@
-{
-    "_comment": "Manual GPS locations for nodes that don't broadcast coordinates. Format: node_name -> {lat, lon}. Live GPS data from nodes overrides these values.",
-    "ExampleNode": {"lat": 52.3676, "lon": 4.9041}
-}

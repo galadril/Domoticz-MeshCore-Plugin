@@ -4,8 +4,6 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Domoticz — MeshCore Dashboard</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         /* ── Reset ──────────────────────────────────────────────── */
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -291,37 +289,6 @@
         .signal-bars .bar.active.excellent { background: var(--green); }
         .signal-bars .bar.active.good      { background: var(--yellow); }
         .signal-bars .bar.active.poor      { background: var(--red); }
-
-        /* Node map */
-        #map-section { margin-top: 32px; }
-        #map-toggle {
-            display: flex; align-items: center; justify-content: space-between;
-            cursor: pointer; user-select: none;
-            margin-bottom: 0; padding-bottom: 8px;
-            border-bottom: 1px solid var(--border);
-        }
-        #map-toggle .section-title { margin: 0; padding: 0; border: none; }
-        #map-toggle .toggle-arrow {
-            font-size: 0.7rem; color: var(--muted);
-            transition: transform 0.2s;
-        }
-        #map-toggle .toggle-arrow.open { transform: rotate(90deg); }
-        #map-body {
-            overflow: hidden; transition: max-height 0.3s ease, opacity 0.3s ease;
-            max-height: 0; opacity: 0;
-        }
-        #map-body.open { max-height: 500px; opacity: 1; margin-top: 12px; }
-        #map-container {
-            background: var(--surface); border: 1px solid var(--border);
-            border-radius: var(--radius); overflow: hidden; height: 300px;
-        }
-        #map-container .leaflet-popup-content-wrapper {
-            background: var(--surface); color: var(--text);
-            border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.4);
-        }
-        #map-container .leaflet-popup-tip { background: var(--surface); }
-        #map-container .leaflet-popup-content { font-size: 0.82rem; line-height: 1.5; }
-        #map-container .leaflet-popup-content b { color: var(--accent); }
 
         /* ── Inbox ──────────────────────────────────────────────── */
         #inbox-history-section { margin-top: 32px; }
@@ -689,17 +656,6 @@
 
     </div><!-- #main-layout -->
 
-    <!-- ── Node map ───────────────────────────────────────────── -->
-    <div id="map-section">
-        <div id="map-toggle" onclick="document.getElementById('map-body').classList.toggle('open');document.getElementById('map-arrow').classList.toggle('open');setTimeout(function(){if(window._demoMap)window._demoMap.invalidateSize()},350)">
-            <h2 class="section-title">🗺️ Node Map</h2>
-            <span class="toggle-arrow open" id="map-arrow">▶</span>
-        </div>
-        <div id="map-body" class="open">
-            <div id="map-container"></div>
-        </div>
-    </div>
-
     <!-- ── Message inbox ──────────────────────────────────────── -->
     <div id="inbox-history-section">
         <div class="inbox-section-header">
@@ -781,47 +737,6 @@
 
 </div><!-- #mc-wrap -->
 </div><!-- #dz-page -->
-
-<script>
-(function() {
-    // Demo node locations (fictional, near Amsterdam)
-    const nodes = [
-        { name: "HomeBase",   lat: 52.3676, lon: 4.9041, color: "#4e9af1", label: "Connected" },
-        { name: "Garden",     lat: 52.3690, lon: 4.9075, color: "#4caf7d", label: "Online" },
-        { name: "Garage",     lat: 52.3665, lon: 4.9010, color: "#4caf7d", label: "Online" },
-        { name: "Shed",       lat: 52.3650, lon: 4.9090, color: "#e05555", label: "Offline" },
-        { name: "Repeater1",  lat: 52.3700, lon: 4.9000, color: "#4caf7d", label: "Online" },
-        { name: "BackField",  lat: 52.3720, lon: 4.9120, color: "#4caf7d", label: "Online" },
-    ];
-
-    const map = L.map("map-container", { zoomControl: true, attributionControl: true });
-    window._demoMap = map;
-    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
-        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
-        subdomains: "abcd",
-        maxZoom: 19,
-    }).addTo(map);
-
-    const bounds = [];
-    for (const n of nodes) {
-        const icon = L.divIcon({
-            className: "",
-            html: `<div style="
-                width:14px;height:14px;border-radius:50%;
-                background:${n.color};border:2px solid #fff;
-                box-shadow:0 0 6px ${n.color}88;
-            "></div>`,
-            iconSize: [14, 14],
-            iconAnchor: [7, 7],
-        });
-        L.marker([n.lat, n.lon], { icon })
-            .bindPopup(`<b>${n.name}</b><br>${n.label}<br><small>${n.lat.toFixed(5)}, ${n.lon.toFixed(5)}</small>`)
-            .addTo(map);
-        bounds.push([n.lat, n.lon]);
-    }
-    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
-})();
-</script>
 
 </body>
 </html>

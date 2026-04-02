@@ -84,6 +84,7 @@ MSG_POLL_INTERVAL      = 30    # how often to drain message queue and refresh co
 SELF_STATS_INTERVAL    = 300   # 5 min — poll connected node stats
 CONNECTION_STALE_S     = 600   # 10 min — force reconnect if no push events received
 LIVENESS_INTERVAL      = 300   # 5 min — send a full contacts refresh to verify the link
+SESSION_MAX_S          = 1800  # 30 min — proactive reconnect to prevent ESP32 TCP stack exhaustion
 
 
 def _bat_pct(mv: int) -> int:
@@ -545,9 +546,9 @@ class BasePlugin:
 
                 if self._stop.is_set():
                     return
-                Domoticz.Log("Reconnecting in 60s…")
+                Domoticz.Log("Reconnecting in 10s…")
                 try:
-                    await self._stop_aware_sleep(60)
+                    await self._stop_aware_sleep(10)
                 except asyncio.CancelledError:
                     return
         finally:
@@ -649,11 +650,20 @@ class BasePlugin:
 
             t_self_stats         = -(SELF_STATS_INTERVAL + 1)   # force immediate poll
             t_liveness           = time.monotonic()
+            t_session_start      = time.monotonic()
             consecutive_failures = 0
             self._last_push_event = time.monotonic()  # reset on fresh session
 
             while not self._stop.is_set():
                 now = time.monotonic()
+
+                # ── Proactive reconnect: ESP32 TCP stacks can't hold a connection
+                #    open indefinitely; cycling every 30 min keeps the device stable.
+                if now - t_session_start >= SESSION_MAX_S:
+                    Domoticz.Log(
+                        f"Session reached {SESSION_MAX_S}s — proactive reconnect to keep device healthy."
+                    )
+                    return
 
                 # ── Staleness check: if no push events for CONNECTION_STALE_S
                 #    and at least one contact is supposedly online, the link is

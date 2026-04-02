@@ -1,0 +1,1819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MeshCore Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        :root {
+            --bg: #1e1f26;
+            --surface: #2a2b35;
+            --border: #3a3b47;
+            --accent: #4e9af1;
+            --green: #4caf7d;
+            --red: #e05555;
+            --yellow: #f0a832;
+            --text: #e2e4ed;
+            --muted: #7c7f93;
+            --radius: 10px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: var(--bg);
+            color: var(--text);
+            padding: 20px;
+            min-height: 100vh;
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        header h1 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        header h1 span.logo {
+            background: var(--accent);
+            color: #fff;
+            border-radius: 6px;
+            padding: 2px 8px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+
+        #last-updated { font-size: 0.8rem; color: var(--muted); }
+
+        #refresh-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 6px;
+            padding: 5px 12px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            transition: background 0.15s;
+        }
+        #refresh-btn:hover { background: var(--border); }
+
+        /* ── Main layout: self node left, contacts right ───────── */
+        #main-layout {
+            display: flex;
+            align-items: flex-start;
+            gap: 0;
+        }
+        #self-section {
+            flex: 0 0 400px;
+        }
+        #layout-divider {
+            flex: 0 0 1px;
+            background: var(--border);
+            align-self: stretch;
+            margin: 0 36px;
+            min-height: 80px;
+            display: none;
+            margin-top: 36px;
+            opacity: 29%;
+        }
+        #contacts-section {
+            flex: 1;
+            min-width: 0;
+        }
+
+        /* ── Section headers ───────────────────────────────────── */
+        .section-title {
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            color: var(--muted);
+            margin: 0 0 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* ── Node grids ─────────────────────────────────────────── */
+        #self-grid .node-card { width: 100%; }
+        #contacts-grid {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 14px;
+        }
+        #contacts-grid .node-card {
+            width: 280px;
+            flex-shrink: 0;
+        }
+
+        @media (max-width: 900px) {
+            #main-layout { flex-direction: column; }
+            #layout-divider { flex: none; width: 100%; height: 1px; margin: 24px 0; min-height: 0; }
+            #self-section, #contacts-section { flex: none; width: 100%; }
+            #contacts-grid .node-card { width: auto; flex: 1 1 220px; }
+        }
+        .node-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .node-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .node-name { font-weight: 600; font-size: 1rem; }
+
+        .badge {
+            font-size: 0.7rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            border-radius: 20px;
+            padding: 3px 10px;
+        }
+        .badge.online  { background: #1a3d2b; color: var(--green); }
+        .badge.offline { background: #3d1a1a; color: var(--red); }
+        .badge.unknown { background: #2e2e2e; color: var(--muted); }
+        .badge.self    { background: #1a2e3d; color: var(--accent); }
+
+        .node-metrics {
+            padding: 12px 18px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 12px;
+        }
+        .metric { display: flex; flex-direction: column; gap: 2px; }
+        .metric a { text-decoration: none; color: inherit; display: contents; }
+        .metric a:hover .metric-value { color: var(--accent); }
+
+        .metric-label {
+            font-size: 0.68rem;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted);
+        }
+        .metric-value {
+            font-size: 0.9rem;
+            font-weight: 500;
+            color: var(--text);
+            transition: color 0.15s;
+        }
+        .metric-value.na { color: var(--muted); font-style: italic; }
+
+        /* Battery bar */
+        .batt-wrap { display: flex; align-items: center; gap: 6px; }
+        .batt-bar-bg {
+            flex: 1;
+            height: 6px;
+            background: var(--border);
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        .batt-bar-fill { height: 100%; border-radius: 3px; transition: width 0.4s; }
+        .batt-bar-fill.high   { background: var(--green); }
+        .batt-bar-fill.medium { background: var(--yellow); }
+        .batt-bar-fill.low    { background: var(--red); }
+
+        /* ── Error / loading ───────────────────────────────────── */
+        #status-msg { text-align: center; color: var(--muted); margin-top: 40px; font-size: 0.9rem; }
+
+        /* ── Inbox history ─────────────────────────────────────── */
+        #inbox-history-section { margin-top: 32px; }
+
+        .inbox-section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 12px;
+        }
+        .inbox-section-header h2 {
+            font-size: 0.9rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--muted);
+        }
+
+        #inbox-log-link {
+            font-size: 0.8rem;
+            color: var(--accent);
+            text-decoration: none;
+            padding: 4px 10px;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            background: var(--surface);
+            transition: background 0.15s;
+        }
+        #inbox-log-link:hover { background: var(--border); }
+
+        #inbox-history {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 0;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .inbox-msg {
+            display: flex;
+            align-items: baseline;
+            gap: 10px;
+            padding: 10px 16px;
+            border-bottom: 1px solid var(--border);
+            font-size: 0.88rem;
+            line-height: 1.4;
+        }
+        .inbox-msg:last-child { border-bottom: none; }
+        .inbox-msg .msg-time {
+            color: var(--muted);
+            font-size: 0.75rem;
+            white-space: nowrap;
+            flex-shrink: 0;
+            min-width: 130px;
+        }
+        .inbox-msg .msg-sender {
+            color: var(--accent);
+            font-weight: 600;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .inbox-msg .msg-text { color: var(--text); word-break: break-word; }
+        .inbox-msg .msg-text .mention {
+            color: #4caf7d;
+            background: rgba(76,175,125,0.13);
+            border-radius: 4px;
+            padding: 0 4px;
+            font-weight: 600;
+        }
+
+        @media (max-width: 540px) {
+            .inbox-msg { flex-wrap: wrap; align-items: center; }
+            .inbox-msg .msg-text { flex-basis: 100%; padding-top: 4px; padding-left: 2px; }
+        }
+
+        .msg-chan {
+            font-size: 0.7rem;
+            font-weight: 600;
+            padding: 1px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+            background: var(--border);
+            color: var(--muted);
+        }
+        .msg-chan.private { background: #2a3a4a; color: #7ab; }
+
+        /* ── Inbox filter bar ───────────────────────────────────── */
+        #inbox-filters {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            margin-bottom: 10px;
+            flex-wrap: wrap;
+        }
+        #inbox-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+
+        .filter-btn {
+            font-size: 0.75rem;
+            padding: 3px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--muted);
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+        }
+        .filter-btn:hover { background: var(--border); }
+        .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+        #inbox-search {
+            font-size: 0.75rem;
+            padding: 3px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border);
+            background: var(--surface);
+            color: var(--text);
+            outline: none;
+            width: 160px;
+            margin-left: auto;
+        }
+        #inbox-search:focus { border-color: var(--accent); }
+
+        #inbox-empty {
+            padding: 20px 16px;
+            color: var(--muted);
+            font-size: 0.85rem;
+            font-style: italic;
+            text-align: center;
+        }
+
+        .msg-reply-btn {
+            margin-left: auto;
+            flex-shrink: 0;
+            background: none;
+            border: 1px solid var(--border);
+            color: var(--muted);
+            border-radius: 4px;
+            padding: 1px 7px;
+            font-size: 0.72rem;
+            cursor: pointer;
+            opacity: 0;
+            transition: opacity 0.15s, color 0.15s;
+        }
+        .inbox-msg:hover .msg-reply-btn { opacity: 1; }
+        .msg-reply-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+        /* ── Compose bar ───────────────────────────────────────────── */
+        #compose-bar {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 14px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 10px 14px;
+        }
+        #compose-target {
+            font-size: 0.82rem;
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+            flex-shrink: 0;
+        }
+        #compose-target:focus { border-color: var(--accent); }
+
+        #compose-input {
+            flex: 1;
+            font-size: 0.88rem;
+            padding: 5px 10px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+            min-width: 0;
+        }
+        #compose-input:focus { border-color: var(--accent); }
+
+        #compose-send {
+            background: var(--accent);
+            color: #fff;
+            border: none;
+            border-radius: 6px;
+            padding: 5px 14px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            font-weight: 600;
+            flex-shrink: 0;
+            transition: opacity 0.15s;
+        }
+        #compose-send:disabled { opacity: 0.45; cursor: default; }
+        #compose-send:not(:disabled):hover { opacity: 0.85; }
+
+        #compose-status { font-size: 0.75rem; flex-shrink: 0; text-align: right; }
+        #compose-status.ok  { color: var(--green); }
+        #compose-status.err { color: var(--red); }
+
+        #compose-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+
+        #emoji-btn {
+            background: none;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            padding: 4px 7px;
+            font-size: 1rem;
+            line-height: 1;
+            cursor: pointer;
+            flex-shrink: 0;
+            transition: background 0.15s;
+        }
+        #emoji-btn:hover { background: var(--border); }
+
+        #emoji-picker {
+            display: none;
+            position: absolute;
+            bottom: calc(100% + 6px);
+            right: 0;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 8px;
+            z-index: 200;
+            width: 340px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+        }
+        #emoji-picker.open { display: block; }
+
+        #emoji-picker-search {
+            width: 100%;
+            font-size: 0.8rem;
+            padding: 4px 8px;
+            border-radius: 6px;
+            border: 1px solid var(--border);
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+            margin-bottom: 6px;
+            box-sizing: border-box;
+        }
+        #emoji-picker-search:focus { border-color: var(--accent); }
+
+        #emoji-scroll { max-height: 260px; overflow-y: auto; overflow-x: hidden; }
+        #emoji-scroll::-webkit-scrollbar { width: 5px; }
+        #emoji-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+        .emoji-category-label {
+            font-size: 0.65rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.07em;
+            color: var(--muted);
+            padding: 6px 2px 2px;
+            grid-column: 1 / -1;
+        }
+        #emoji-grid { display: grid; grid-template-columns: repeat(9, 1fr); gap: 1px; }
+        .emoji-cell {
+            font-size: 1.25rem;
+            text-align: center;
+            padding: 3px 1px;
+            border-radius: 5px;
+            cursor: pointer;
+            transition: background 0.1s;
+            user-select: none;
+            line-height: 1.5;
+        }
+        .emoji-cell:hover { background: var(--border); }
+
+        /* Signal quality bar */
+        .signal-wrap { display: flex; align-items: center; gap: 6px; }
+        .signal-bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+        .signal-bars .bar {
+            width: 4px;
+            border-radius: 1px;
+            background: var(--border);
+            transition: background 0.3s;
+        }
+        .signal-bars .bar.active.excellent { background: var(--green); }
+        .signal-bars .bar.active.good      { background: var(--yellow); }
+        .signal-bars .bar.active.poor      { background: var(--red); }
+
+        /* ── Node map ──────────────────────────────────────────── */
+        #map-section { margin-top: 32px; }
+        #map-toggle {
+            display: flex; align-items: center; justify-content: space-between;
+            cursor: pointer; user-select: none;
+            margin-bottom: 0;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        #map-toggle .section-title { margin: 0; padding: 0; border: none; }
+        #map-toggle .toggle-arrow {
+            font-size: 0.7rem; color: var(--muted);
+            transition: transform 0.2s;
+        }
+        #map-toggle .toggle-arrow.open { transform: rotate(90deg); }
+        #map-body {
+            overflow: hidden; transition: max-height 0.3s ease, opacity 0.3s ease;
+            max-height: 0; opacity: 0;
+        }
+        #map-body.open { max-height: 500px; opacity: 1; margin-top: 12px; }
+        #map-container {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+            height: 300px;
+        }
+        #map-container .leaflet-popup-content-wrapper {
+            background: var(--surface);
+            color: var(--text);
+            border-radius: 8px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+        }
+        #map-container .leaflet-popup-tip { background: var(--surface); }
+        #map-container .leaflet-popup-content { font-size: 0.82rem; line-height: 1.5; }
+        #map-container .leaflet-popup-content b { color: var(--accent); }
+        #map-empty {
+            padding: 24px 16px;
+            color: var(--muted);
+            font-size: 0.85rem;
+            font-style: italic;
+            text-align: center;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+        }
+
+        /* ── Location editor modal ─────────────────────────────── */
+        #loc-overlay {
+            display: none; position: fixed; inset: 0; z-index: 500;
+            background: rgba(0,0,0,0.55); align-items: center; justify-content: center;
+        }
+        #loc-overlay.open { display: flex; }
+        #loc-modal {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 20px 24px;
+            width: 440px; max-width: 94vw; max-height: 80vh;
+            display: flex; flex-direction: column; gap: 14px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+        }
+        #loc-modal h3 { font-size: 1rem; font-weight: 600; }
+        #loc-list { overflow-y: auto; display: flex; flex-direction: column; gap: 10px; }
+        .loc-row {
+            display: flex; align-items: center; gap: 8px;
+            font-size: 0.85rem;
+        }
+        .loc-row .loc-name {
+            flex: 0 0 110px; font-weight: 600; overflow: hidden;
+            text-overflow: ellipsis; white-space: nowrap;
+        }
+        .loc-row input {
+            flex: 1; min-width: 0; font-size: 0.82rem; padding: 4px 8px;
+            border-radius: 6px; border: 1px solid var(--border);
+            background: var(--bg); color: var(--text); outline: none;
+        }
+        .loc-row input:focus { border-color: var(--accent); }
+        .loc-row input::placeholder { color: var(--muted); }
+        .loc-row .loc-clear-btn {
+            background: none; border: 1px solid var(--border); color: var(--muted);
+            border-radius: 4px; padding: 2px 6px; font-size: 0.72rem;
+            cursor: pointer; flex-shrink: 0; transition: color 0.15s;
+        }
+        .loc-row .loc-clear-btn:hover { color: var(--red); border-color: var(--red); }
+        #loc-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+        #loc-actions button {
+            font-size: 0.82rem; padding: 5px 14px; border-radius: 6px;
+            cursor: pointer; border: 1px solid var(--border);
+            background: var(--surface); color: var(--text);
+        }
+        #loc-actions button:hover { background: var(--border); }
+        #loc-actions button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+        #loc-actions button.primary:hover { opacity: 0.85; }
+        #loc-export-msg { font-size: 0.72rem; color: var(--green); display: none; }
+        #map-edit-btn {
+            font-size: 0.72rem; color: var(--muted); cursor: pointer;
+            margin-left: 10px; text-decoration: none;
+        }
+        #map-edit-btn:hover { color: var(--accent); }
+
+        .node-loc-btn {
+            background: none; border: none; cursor: pointer;
+            font-size: 0.82rem; padding: 2px 4px; line-height: 1;
+            opacity: 0.5; transition: opacity 0.15s;
+        }
+        .node-loc-btn:hover { opacity: 1; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1><span class="logo">MC</span> MeshCore Dashboard</h1>
+        <div style="display:flex;align-items:center;gap:14px">
+            <span id="last-updated"></span>
+            <button id="refresh-btn" onclick="loadData()">↻ Refresh</button>
+        </div>
+    </header>
+
+    <div id="status-msg">Loading…</div>
+
+    <div id="main-layout">
+        <section id="self-section" style="display:none">
+            <h2 class="section-title">Connected Node</h2>
+            <div id="self-grid"></div>
+        </section>
+
+        <div id="layout-divider"></div>
+
+        <section id="contacts-section" style="display:none">
+            <h2 class="section-title">Contacts</h2>
+            <div id="contacts-grid"></div>
+        </section>
+    </div>
+
+    <!-- ── Node map ───────────────────────────────────────────── -->
+    <div id="map-section">
+        <div id="map-toggle" onclick="_toggleMap()">
+            <h2 class="section-title">🗺️ Node Map <a id="map-edit-btn" onclick="event.stopPropagation();_openLocEditor()" title="Edit node locations">📍 Edit locations</a></h2>
+            <span class="toggle-arrow" id="map-arrow">▶</span>
+        </div>
+        <div id="map-body">
+            <div id="map-empty">No node locations set yet. Click <b>📍 Edit locations</b> above or the 📍 icon on any node card to add coordinates.</div>
+            <div id="map-container" style="display:none"></div>
+        </div>
+    </div>
+
+    <!-- ── Location editor modal ─────────────────────────────── -->
+    <div id="loc-overlay" onclick="if(event.target===this)_closeLocEditor()">
+        <div id="loc-modal">
+            <h3>📍 Edit Node Locations</h3>
+            <div id="loc-list"></div>
+            <span id="loc-export-msg">✓ Copied to clipboard</span>
+            <div id="loc-actions">
+                <button onclick="_exportLocations()" title="Copy as JSON for meshcore_locations.json">📋 Export JSON</button>
+                <button onclick="_closeLocEditor()">Cancel</button>
+                <button class="primary" onclick="_saveLocations()">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Inbox history ─────────────────────────────────────── -->
+    <div id="inbox-history-section">
+        <div class="inbox-section-header">
+            <h2>📨 Message Inbox</h2>
+            <a id="inbox-log-link" href="#" target="_top" style="display:none">📋 View full log</a>
+        </div>
+        <!-- filter / search -->
+        <div id="inbox-filters">
+            <div id="inbox-chips"></div>
+            <input id="inbox-search" type="search" placeholder="Search sender / text…" oninput="_onInboxSearch(this.value)">
+        </div>
+        <!-- compose bar -->
+        <div id="compose-bar" style="position:relative">
+            <select id="compose-target" title="Send to"></select>
+            <input id="compose-input" type="text" placeholder="Type a message…" maxlength="200"
+                   onkeydown="if(event.key==='Enter')_sendMessage()">
+            <button id="emoji-btn" onclick="_toggleEmojiPicker(event)" title="Insert emoji">😊</button>
+            <div id="emoji-picker">
+                <input id="emoji-picker-search" type="search" placeholder="Search…" oninput="_filterEmoji(this.value)" autocomplete="off">
+                <div id="emoji-scroll"><div id="emoji-grid"></div></div>
+            </div>
+            <div id="compose-actions">
+                <button id="compose-send" onclick="_sendMessage()">Send ✈</button>
+                <span id="compose-status"></span>
+            </div>
+        </div>
+        <div id="inbox-history">
+            <div id="inbox-empty">No messages yet.</div>
+        </div>
+    </div>
+
+    <script>
+    (function () {
+        // Metrics shown for the self (connected) node — in display order.
+        // "key" matches the property names in meshcore_devices.json.
+        const SELF_METRICS = [
+            { key: "battery", label: "Battery", unit: "%", special: "battery" },
+            { key: "battery_v", label: "Voltage", unit: "V" },
+            { key: "rssi", label: "RSSI", unit: "dBm" },
+            { key: "snr", label: "SNR", unit: "dB", special: "snr" },
+            { key: "noise", label: "Noise Floor", unit: "dBm" },
+            { key: "uptime", label: "Uptime", unit: "min", special: "uptime" },
+            { key: "airtime", label: "TX Air", unit: "s" },
+            { key: "pkts_sent", label: "Pkts Sent", unit: "" },
+            { key: "pkts_recv", label: "Pkts Recv", unit: "" },
+            { key: "last_seen", label: "Last Seen", unit: "" },
+        ];
+
+        // Metrics shown for remote contacts — only data available from contacts list / messages.
+        const NODE_METRICS = [
+            { key: "hops",      label: "Hops",      unit: ""   },
+            { key: "snr",       label: "SNR",       unit: "dB", special: "snr" },
+            { key: "last_seen", label: "Last Seen", unit: ""   },
+        ];
+
+        // ── Device map (loaded from meshcore_devices.json) ───────────────────────────
+        // {
+        //   inbox, inbox_value, self, written_at,
+        //   nodes: { nodeName: { status: {idx, value, online}, rssi: {idx, value}, ... } }
+        // }
+        let _deviceMap = null;
+
+        async function _loadDeviceMap() {
+            try {
+                const r = await fetch("/templates/meshcore_devices.json?_=" + Date.now());
+                if (r.ok) _deviceMap = await r.json();
+            } catch (_) { }
+        }
+
+        function deviceUrl(idx) {
+            if (!idx) return "#";
+            return `/index.html#/Devices/${idx}/Log`;
+        }
+
+        // Fetch all devices and return a byIdx lookup keyed on Domoticz idx.
+        async function fetchDevices() {
+            const resp = await fetch("/json.htm?type=command&param=getdevices&order=Name");
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const data = await resp.json();
+            const all = data.result || [];
+            const byIdx = {};
+            for (const d of all) byIdx[d.idx] = d;
+            return { all, byIdx };
+        }
+
+        function battClass(pct) {
+            if (pct >= 60) return "high";
+            if (pct >= 25) return "medium";
+            return "low";
+        }
+
+        function renderBatteryHtml(pct, idx) {
+            const cls = battClass(pct);
+            return `
+        <a href="${deviceUrl(idx)}" target="_top" title="View battery detail">
+          <div class="metric-label">Battery</div>
+          <div class="metric-value">
+            <div class="batt-wrap">
+              <span>${pct}%</span>
+              <div class="batt-bar-bg">
+                <div class="batt-bar-fill ${cls}" style="width:${pct}%"></div>
+              </div>
+            </div>
+          </div>
+        </a>`;
+        }
+
+        function _snrQuality(snr) {
+            if (snr >= 7)  return { level: 4, cls: "excellent", label: "Excellent" };
+            if (snr >= 3)  return { level: 3, cls: "excellent", label: "Good" };
+            if (snr >= 0)  return { level: 2, cls: "good",      label: "Fair" };
+            if (snr >= -5) return { level: 1, cls: "poor",      label: "Poor" };
+            return                { level: 0, cls: "poor",      label: "Very Poor" };
+        }
+
+        function renderSnrHtml(snr, idx) {
+            const q = _snrQuality(snr);
+            const heights = [4, 7, 10, 14];
+            const bars = heights.map((h, i) =>
+                `<div class="bar${i < q.level ? ` active ${q.cls}` : ""}" style="height:${h}px"></div>`
+            ).join("");
+            const inner = `
+              <div class="metric-label">SNR</div>
+              <div class="metric-value">
+                <div class="signal-wrap">
+                  <div class="signal-bars">${bars}</div>
+                  <span>${snr} dB</span>
+                </div>
+              </div>`;
+            return idx
+                ? `<a href="${deviceUrl(idx)}" target="_top" title="${q.label}">${inner}</a>`
+                : inner;
+        }
+
+        function _formatUptime(rawMinutes) {
+            const m = parseFloat(rawMinutes);
+            if (isNaN(m) || m < 0) return null;
+            const totalMin = Math.round(m);
+            const days  = Math.floor(totalMin / 1440);
+            const hours = Math.floor((totalMin % 1440) / 60);
+            const mins  = totalMin % 60;
+            const parts = [];
+            if (days  > 0) parts.push(`${days}d`);
+            if (hours > 0) parts.push(`${hours}h`);
+            parts.push(`${mins}m`);
+            return parts.join(" ");
+        }
+
+        function renderMetricHtml(label, value, unit, idx) {
+            const display = value !== undefined && value !== null && value !== ""
+                ? `${value}${unit ? " " + unit : ""}`
+                : "—";
+            const cls = display === "—" ? " na" : "";
+            const inner = `<div class="metric-label">${label}</div><div class="metric-value${cls}">${display}</div>`;
+            return idx
+                ? `<a href="${deviceUrl(idx)}" target="_top" title="View ${label} detail">${inner}</a>`
+                : inner;
+        }
+
+        // Build a raw value string from a slot object (from either JSON snapshot or live API).
+        // slot = { idx, value, online } from JSON  OR  a Domoticz API device object.
+        function _slotValue(slot) {
+            if (!slot) return "";
+            // Live API device object has a "Data" field; JSON snapshot has "value".
+            return slot.Data !== undefined ? slot.Data : (slot.value || "");
+        }
+
+        function _slotIdx(slot) {
+            if (!slot) return null;
+            return slot.idx !== undefined ? slot.idx : (slot.ID || null);
+        }
+
+        function _slotOnline(slot) {
+            if (!slot) return false;
+            if (slot.online !== undefined) return slot.online;           // JSON snapshot
+            return slot.Status === "On" || slot.Data === "On";           // live API
+        }
+
+        // Render a complete node card from a slots map.
+        // slots values can be either JSON snapshot objects or live API device objects.
+        function renderNode(nodeName, slots, isSelf) {
+            const statusSlot = slots.status || null;
+            const statusIdx = _slotIdx(statusSlot);
+
+            let badgeHtml;
+            if (isSelf) {
+                badgeHtml = `<span class="badge self">Connected</span>`;
+            } else if (statusSlot) {
+                const online = _slotOnline(statusSlot);
+                badgeHtml = online
+                    ? `<a href="${deviceUrl(statusIdx)}" target="_top" style="text-decoration:none"><span class="badge online">Online</span></a>`
+                    : `<a href="${deviceUrl(statusIdx)}" target="_top" style="text-decoration:none"><span class="badge offline">Offline</span></a>`;
+            } else {
+                badgeHtml = `<span class="badge unknown">unknown</span>`;
+            }
+
+            const metrics = isSelf ? SELF_METRICS : NODE_METRICS;
+            let metricsHtml = "";
+            for (const { key, label, unit, special } of metrics) {
+                const slot = slots[key] || null;
+                const devIdx = _slotIdx(slot);
+                const raw = _slotValue(slot);
+                const numVal = raw.replace(/\s*(dBm|dB|%|V|°C|hops|min|s|pkts)$/i, "").trim();
+                const div = `<div class="metric" data-node="${escHtml(nodeName)}" data-key="${key}">`;
+                const end = `</div>`;
+                if (!slot) {
+                    metricsHtml += `${div}${renderMetricHtml(label, null, unit, null)}${end}`;
+                    continue;
+                }
+                if (special === "battery") {
+                    const pct = parseInt(numVal, 10);
+                    metricsHtml += `${div}${isNaN(pct) ? renderMetricHtml(label, null, unit, devIdx) : renderBatteryHtml(pct, devIdx)}${end}`;
+                } else if (special === "snr") {
+                    const snr = parseFloat(numVal);
+                    metricsHtml += `${div}${isNaN(snr) ? renderMetricHtml(label, null, unit, devIdx) : renderSnrHtml(snr, devIdx)}${end}`;
+                } else if (special === "uptime") {
+                    const formatted = _formatUptime(numVal);
+                    metricsHtml += `${div}${renderMetricHtml(label, formatted, "", devIdx)}${end}`;
+                } else {
+                    metricsHtml += `${div}${renderMetricHtml(label, numVal, unit, devIdx)}${end}`;
+                }
+            }
+
+            return `
+        <div class="node-card" data-node="${escHtml(nodeName)}">
+          <div class="node-header">
+            <span class="node-name">${escHtml(nodeName)}</span>
+            <span style="display:flex;align-items:center;gap:6px">
+              <button class="node-loc-btn" onclick="event.stopPropagation();_openLocEditor('${escHtml(nodeName).replace(/'/g, "\\'")}')" title="Edit location">📍</button>
+              <span class="node-badge" data-node="${escHtml(nodeName)}">${badgeHtml}</span>
+            </span>
+          </div>
+          <div class="node-metrics">${metricsHtml}</div>
+        </div>`;
+        }
+
+        // Patch an already-rendered card in-place with fresh data from byIdx.
+        // Only rewrites the inner HTML of each metric cell — no full re-render.
+        function patchNode(nodeName, isSelf, byIdx) {
+            const mapSlots = (_deviceMap && _deviceMap.nodes && _deviceMap.nodes[nodeName]) || {};
+            const metrics = isSelf ? SELF_METRICS : NODE_METRICS;
+
+            // Patch badge
+            const badgeEl = document.querySelector(`.node-badge[data-node="${CSS.escape(nodeName)}"]`);
+            if (badgeEl && !isSelf) {
+                const statusSlot = mapSlots.status;
+                const statusIdx = statusSlot ? statusSlot.idx : null;
+                const liveDev = statusIdx ? byIdx[statusIdx] : null;
+                if (liveDev) {
+                    const online = liveDev.Status === "On" || liveDev.Data === "On";
+                    badgeEl.innerHTML = online
+                        ? `<a href="${deviceUrl(statusIdx)}" target="_top" style="text-decoration:none"><span class="badge online">Online</span></a>`
+                        : `<a href="${deviceUrl(statusIdx)}" target="_top" style="text-decoration:none"><span class="badge offline">Offline</span></a>`;
+                }
+            }
+
+            // Patch each metric cell
+            for (const { key, label, unit, special } of metrics) {
+                const cell = document.querySelector(`.metric[data-node="${CSS.escape(nodeName)}"][data-key="${key}"]`);
+                if (!cell) continue;
+                const slot = mapSlots[key] || null;
+                const devIdx = slot ? slot.idx : null;
+                const liveDev = devIdx ? byIdx[devIdx] : null;
+                if (!liveDev) continue;
+                const raw = liveDev.Data || "";
+                const numVal = raw.replace(/\s*(dBm|dB|%|V|°C|hops|min|s|pkts)$/i, "").trim();
+                cell.innerHTML = special === "battery"
+                    ? (() => { const pct = parseInt(numVal, 10); return isNaN(pct) ? renderMetricHtml(label, null, unit, devIdx) : renderBatteryHtml(pct, devIdx); })()
+                    : special === "snr"
+                    ? (() => { const snr = parseFloat(numVal); return isNaN(snr) ? renderMetricHtml(label, null, unit, devIdx) : renderSnrHtml(snr, devIdx); })()
+                    : special === "uptime"
+                    ? (() => { const formatted = _formatUptime(numVal); return renderMetricHtml(label, formatted, "", devIdx); })()
+                    : renderMetricHtml(label, numVal, unit, devIdx);
+            }
+        }
+
+        // ── Inbox history ────────────────────────────────────────────────────────────
+        // On first load: render instantly from JSON snapshot, then fetch full history.
+        // On every 10-second refresh: detect new messages via LastUpdate and prepend.
+
+        const _inboxHistory = [];    // [{time, channel, sender, text}, ...] newest first
+        let _inboxLastUpdate = null;  // LastUpdate of the last recorded entry
+        let _inboxDevIdx2 = null;
+        let _inboxLoaded = false; // true once initial history has been fetched
+        let _inboxChanFilter = null;  // null = all channels, or "Public" / "Private" / "Ch 1"
+        let _inboxSearch = "";   // wildcard text search on sender (case-insensitive)
+
+        let _channelNames = {};  // idx string → name, loaded from meshcore_channels.json
+
+        async function _loadChannelNames() {
+            try {
+                const r = await fetch("/templates/meshcore_channels.json");
+                if (r.ok) _channelNames = await r.json();
+            } catch (_) { }
+        }
+
+        function _chanLabel(idxStr) {
+            if (_channelNames[idxStr]) return _channelNames[idxStr];
+            const n = parseInt(idxStr, 10);
+            return isNaN(n) ? `Ch ${idxStr}` : `Ch ${n}`;
+        }
+
+        function _parseInboxData(raw) {
+            // New format: [C0|sender] text  or  [P|sender] text
+
+            // Legacy format: [sender] text  (no pipe)
+            const m = raw.match(/^\[([^\]]+)\]\s*(.*)/s);
+            if (!m) return { channel: null, sender: "", text: raw };
+            const meta = m[1], text = m[2];
+            const pipe = meta.indexOf("|");
+            if (pipe >= 0) {
+                const chanPart = meta.slice(0, pipe);
+                const sender = meta.slice(pipe + 1);
+                const channel = chanPart === "P" ? "Private" : _chanLabel(chanPart.slice(1));
+                return { channel, sender, text };
+            }
+            return { channel: null, sender: meta, text };
+        }
+
+        async function _fetchTextLog(idx) {
+            try {
+                const resp = await fetch(`/json.htm?type=command&param=gettextlog&idx=${idx}`);
+                if (!resp.ok) return [];
+                const data = await resp.json();
+                return data.result || [];
+            } catch (_) { return []; }
+        }
+
+        async function loadInboxHistory(inboxDev) {
+            const container = document.getElementById("inbox-history");
+            const logLink = document.getElementById("inbox-log-link");
+
+            if (!inboxDev || !inboxDev.idx) {
+                container.innerHTML = `<div id="inbox-empty">No messages yet.</div>`;
+                return;
+            }
+
+            _inboxDevIdx2 = inboxDev.idx;
+            logLink.href = `/index.html#/Devices/${_inboxDevIdx2}/Log`;
+            logLink.style.display = "";
+
+            // ── First load: populate from Domoticz text log history ──
+            if (!_inboxLoaded) {
+                _inboxLoaded = true;
+                const entries = await _fetchTextLog(_inboxDevIdx2);
+                // Remove any snapshot placeholder that was injected by initialRender()
+                const snapIdx = _inboxHistory.findIndex(m => m._snapshot);
+                if (snapIdx !== -1) _inboxHistory.splice(snapIdx, 1);
+                for (const e of entries) {
+                    const raw = e.Data || e.Value || "";
+                    const time = e.Date || "";
+                    if (!raw) continue;
+                    const { channel, sender, text } = _parseInboxData(raw);
+                    _inboxHistory.push({ time, channel, sender, text });   // API returns oldest-first
+                }
+                // After loading history, record the current LastUpdate so we don't
+                // double-add the most recent entry on the next refresh.
+                _inboxLastUpdate = inboxDev.LastUpdate || null;
+            }
+
+            // ── Every refresh: prepend newly arrived messages ──
+            const update = inboxDev.LastUpdate || "";
+            const data = inboxDev.Data || "";
+            if (data && update && update !== _inboxLastUpdate) {
+                _inboxLastUpdate = update;
+                const { channel, sender, text } = _parseInboxData(data);
+                _inboxHistory.unshift({ time: update, channel, sender, text });
+                if (_inboxHistory.length > 200) _inboxHistory.pop();
+            }
+
+            _renderInbox(container);
+        }
+
+        function _renderInbox(container) {
+            if (!_inboxHistory.length) {
+                container.innerHTML = `<div id="inbox-empty">No messages yet.</div>`;
+                _renderChannelChips([]);
+                return;
+            }
+
+            const channels = [...new Set(_inboxHistory.map(m => m.channel).filter(Boolean))].sort();
+            _renderChannelChips(channels);
+
+            const needle = _inboxSearch.toLowerCase();
+            const visible = _inboxHistory.filter(m => {
+                if (_inboxChanFilter && m.channel !== _inboxChanFilter) return false;
+                if (needle && !(m.sender || "").toLowerCase().includes(needle)
+                    && !(m.text || "").toLowerCase().includes(needle)) return false;
+                return true;
+            });
+
+            if (!visible.length) {
+                container.innerHTML = `<div id="inbox-empty">No messages match the filter.</div>`;
+                return;
+            }
+
+            container.innerHTML = visible.map(({ time, channel, sender, text }) => {
+                const chanHtml = channel
+                    ? `<span class="msg-chan${channel === "Private" ? " private" : ""}">${escHtml(channel)}</span>`
+                    : "";
+                const replyTarget = sender && sender !== "?" ? escHtml(sender) : "";
+                const replyChannel = channel && channel !== "Private" ? escHtml(channel) : "";
+                const replyBtn = replyTarget
+                    ? `<button class="msg-reply-btn" onclick="_replyTo(event,'${replyTarget}','${replyChannel}')" title="Reply to ${replyTarget}">↩ Reply</button>`
+                    : "";
+                return `<div class="inbox-msg">
+          <span class="msg-time">${escHtml(time)}</span>
+          ${chanHtml}
+          ${sender ? `<span class="msg-sender">${escHtml(sender)}</span>` : ""}
+          <span class="msg-text">${_renderMentions(text)}</span>
+          ${replyBtn}
+        </div>`;
+            }).join("");
+        }
+
+        function _renderChannelChips(channels) {
+            const chipBar = document.getElementById("inbox-chips");
+            if (!chipBar) return;
+
+            // Build the set of channels we need buttons for
+            const needed = [null, ...channels];  // null = "All"
+
+            // Remove buttons for channels no longer present
+            chipBar.querySelectorAll(".filter-btn[data-chan]").forEach(btn => {
+                const val = btn.dataset.chan === "__all__" ? null : btn.dataset.chan;
+                if (!needed.includes(val)) btn.remove();
+            });
+
+            // Add missing buttons and update active state
+            needed.forEach(c => {
+                const key = c === null ? "__all__" : c;
+                const label = c === null ? "All" : c;
+                let btn = chipBar.querySelector(`.filter-btn[data-chan="${key}"]`);
+                if (!btn) {
+                    btn = document.createElement("button");
+                    btn.className = "filter-btn";
+                    btn.dataset.chan = key;
+                    btn.textContent = label;
+                    btn.addEventListener("click", () => _setChanFilter(c));
+                    // Insert before "All" goes first, others after
+                    if (c === null) chipBar.prepend(btn);
+                    else chipBar.appendChild(btn);
+                }
+                btn.classList.toggle("active", _inboxChanFilter === c);
+            });
+        }
+
+        function _setChanFilter(key) {
+            _inboxChanFilter = key;
+            const container = document.getElementById("inbox-history");
+            if (container) _renderInbox(container);
+        }
+
+        function _onInboxSearch(val) {
+            _inboxSearch = val;
+            const container = document.getElementById("inbox-history");
+            if (container) _renderInbox(container);
+        }
+
+        function escHtml(s) {
+            return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        }
+
+        function _renderMentions(text) {
+            return escHtml(text).replace(/@\[([^\]]+)\]|@(\S+)/g, (m, bracketed, plain) =>
+                bracketed ? `<span class="mention">@[${bracketed}]</span>`
+                          : `<span class="mention">@${plain}</span>`);
+        }
+
+        // ── Derive node list from device map (or fallback suffix-sniff) ───────────────
+
+        function _nodeList(all) {
+            if (_deviceMap && _deviceMap.nodes) {
+                const selfName = _deviceMap.self || null;
+                const remoteNodes = Object.keys(_deviceMap.nodes).filter(n => n !== selfName);
+                return { selfName, remoteNodes };
+            }
+            // Fallback for fresh install before first heartbeat writes the JSON
+            let selfName = null;
+            for (const d of all) {
+                if (d.Name.endsWith(" Uptime") && !selfName)
+                    selfName = d.Name.slice(0, -" Uptime".length);
+            }
+            const seenRemote = new Set();
+            const remoteNodes = [];
+            for (const d of all) {
+                if (d.Name.endsWith(" Hops")) {
+                    const name = d.Name.slice(0, -" Hops".length);
+                    if (!seenRemote.has(name)) { seenRemote.add(name); remoteNodes.push(name); }
+                }
+            }
+            return { selfName, remoteNodes };
+        }
+
+        // ── Main data loader ─────────────────────────────────────────────────────────
+        // Phase 1 (instant): render from the JSON snapshot — no API call needed.
+        // Phase 2 (live):    fetch the Domoticz API and patch values in-place.
+
+        let _initialRenderDone = false;
+        let _deviceMapFreshFromInit = false;
+
+        async function initialRender() {
+            if (!_deviceMap) return;   // nothing to show yet
+
+            const { selfName, remoteNodes } = _nodeList([]);
+            if (!selfName && !remoteNodes.length) return;
+
+            if (selfName) {
+                const slots = (_deviceMap.nodes && _deviceMap.nodes[selfName]) || {};
+                document.getElementById("self-grid").innerHTML = renderNode(selfName, slots, true);
+                document.getElementById("self-section").style.display = "";
+            }
+            if (remoteNodes.length) {
+                const grid = document.getElementById("contacts-grid");
+                grid.innerHTML = remoteNodes.map(name => {
+                    const slots = (_deviceMap.nodes && _deviceMap.nodes[name]) || {};
+                    return renderNode(name, slots, false);
+                }).join("");
+                document.getElementById("contacts-section").style.display = "";
+            }
+            document.getElementById("layout-divider").style.display =
+                (selfName && remoteNodes.length) ? "block" : "none";
+            document.getElementById("status-msg").style.display = "none";
+
+            // Show snapshot inbox entry immediately as a placeholder (no timestamp yet).
+            // Use a flag so loadInboxHistory knows to drop this entry once real history arrives.
+            if (_deviceMap.inbox_value && !_inboxHistory.length) {
+                const { channel, sender, text } = _parseInboxData(_deviceMap.inbox_value);
+                const container = document.getElementById("inbox-history");
+                _inboxHistory.push({ time: "", channel, sender, text, _snapshot: true });
+                _renderInbox(container);
+            }
+
+            // Timestamp from written_at so the user knows how fresh the snapshot is
+            if (_deviceMap.written_at) {
+                const d = new Date(_deviceMap.written_at * 1000);
+                document.getElementById("last-updated").textContent =
+                    `Snapshot ${d.getHours().toString().padStart(2, "0")}:${d.getMinutes().toString().padStart(2, "0")}:${d.getSeconds().toString().padStart(2, "0")}`;
+            }
+
+            _initialRenderDone = true;
+        }
+
+        async function loadData() {
+            if (!_initialRenderDone)
+                document.getElementById("status-msg").textContent = "Refreshing…";
+            try {
+                // Reload the device map so new nodes / renamed slots are picked up.
+                // Skip on the very first call — it was already loaded fresh during init.
+                if (_deviceMapFreshFromInit) {
+                    _deviceMapFreshFromInit = false;
+                } else {
+                    await _loadDeviceMap();
+                }
+
+                // Phase 1: if we haven't shown anything yet, render from snapshot immediately
+                if (!_initialRenderDone) await initialRender();
+
+                // Phase 2: fetch live data and patch
+                const { all, byIdx } = await fetchDevices();
+
+                const { selfName, remoteNodes } = _nodeList(all);
+
+                if (!selfName && !remoteNodes.length) {
+                    document.getElementById("status-msg").textContent = "No contacts found.";
+                    return;
+                }
+
+                function _liveSlots(name) {
+                    const slots = (_deviceMap && _deviceMap.nodes && _deviceMap.nodes[name]) || {};
+                    const live = {};
+                    for (const key of Object.keys(slots)) {
+                        const snap = slots[key];
+                        live[key] = snap && snap.idx && byIdx[snap.idx] ? byIdx[snap.idx] : snap;
+                    }
+                    return live;
+                }
+
+                // ── Connected node ──
+                const selfGrid = document.getElementById("self-grid");
+                const selfSection = document.getElementById("self-section");
+                if (selfName) {
+                    if (!selfGrid.querySelector(`.node-card[data-node="${CSS.escape(selfName)}"]`)) {
+                        selfGrid.innerHTML = renderNode(selfName, _liveSlots(selfName), true);
+                    } else {
+                        patchNode(selfName, true, byIdx);
+                    }
+                    selfSection.style.display = "";
+                } else {
+                    selfSection.style.display = "none";
+                }
+
+                // ── Contacts ──
+                const contactsGrid = document.getElementById("contacts-grid");
+                const contactsSection = document.getElementById("contacts-section");
+                if (remoteNodes.length) {
+                    const rendered = new Set(
+                        [...contactsGrid.querySelectorAll(".node-card[data-node]")].map(el => el.dataset.node)
+                    );
+                    if (remoteNodes.some(n => !rendered.has(n))) {
+                        contactsGrid.innerHTML = remoteNodes.map(n => renderNode(n, _liveSlots(n), false)).join("");
+                    } else {
+                        for (const n of remoteNodes) patchNode(n, false, byIdx);
+                    }
+                    contactsSection.style.display = "";
+                } else {
+                    contactsSection.style.display = "none";
+                }
+
+                document.getElementById("layout-divider").style.display =
+                    (selfName && remoteNodes.length) ? "block" : "none";
+                document.getElementById("status-msg").style.display = "none";
+
+                // Refresh compose targets in case new nodes / channels appeared
+                _populateComposeTargets();
+
+                // Inbox — load in background so the node grid update is not blocked
+                const inboxIdx = _deviceMap && _deviceMap.inbox;
+                const inboxDev = inboxIdx ? byIdx[inboxIdx] : (all.find(d => d.Name === "Mesh Inbox") || null);
+                loadInboxHistory(inboxDev);
+
+                // Update node map if any nodes have GPS coordinates
+                _updateMap();
+
+                const now = new Date();
+                document.getElementById("last-updated").textContent =
+                    `Updated ${now.getHours().toString().padStart(2, "0")}:${now.getMinutes().toString().padStart(2, "0")}:${now.getSeconds().toString().padStart(2, "0")}`;
+
+            } catch (err) {
+                document.getElementById("status-msg").textContent = `Error loading data: ${err.message}`;
+                document.getElementById("status-msg").style.display = "block";
+            }
+        }
+
+        // Init: load JSON files, render snapshot instantly, then start live refresh loop.
+        let _manualLocations = {};  // node_name → {lat, lon} from meshcore_locations.json
+
+        async function _loadManualLocations() {
+            try {
+                const r = await fetch("/templates/meshcore_locations.json?_=" + Date.now());
+                if (r.ok) _manualLocations = await r.json();
+            } catch (_) { }
+        }
+
+        Promise.all([_loadChannelNames(), _loadDeviceMap(), _loadManualLocations()]).then(async () => {
+            _deviceMapFreshFromInit = true;
+            _populateComposeTargets();
+            await initialRender();   // instant — no API call
+            _updateMap();            // show empty state or pins from localStorage/file immediately
+            loadData();              // kick off first live refresh immediately
+            setInterval(loadData, 10000);
+        });
+
+        // ── Node map (Leaflet) ────────────────────────────────────────────────────
+        let _map = null;
+        let _mapMarkers = [];  // L.marker instances
+        let _mapFitted = false;  // only auto-fit bounds on first render
+        let _mapOpen = false;
+
+        // Merge location sources: localStorage > meshcore_locations.json > device map GPS
+        function _getNodeLocation(name, node) {
+            // 1. localStorage overrides (user-edited from dashboard)
+            try {
+                const stored = JSON.parse(localStorage.getItem("mc_locations") || "{}");
+                if (stored[name] && stored[name].lat && stored[name].lon) return stored[name];
+            } catch (_) { }
+            // 2. Manual file fallback
+            if (_manualLocations[name] && _manualLocations[name].lat && _manualLocations[name].lon)
+                return _manualLocations[name];
+            // 3. Device map GPS from node
+            if (node && node.lat && node.lon && !(node.lat === 0 && node.lon === 0))
+                return { lat: node.lat, lon: node.lon };
+            return null;
+        }
+
+        function _toggleMap() {
+            _mapOpen = !_mapOpen;
+            const body = document.getElementById("map-body");
+            const arrow = document.getElementById("map-arrow");
+            body.classList.toggle("open", _mapOpen);
+            arrow.classList.toggle("open", _mapOpen);
+            if (_mapOpen) {
+                // Initialize / refresh map now that the container is visible
+                _updateMap();
+                if (_map) setTimeout(() => _map.invalidateSize(), 350);
+            }
+        }
+
+        function _updateMap() {
+            if (typeof L === "undefined") return;  // Leaflet not loaded
+
+            const located = [];
+            const selfName = (_deviceMap && _deviceMap.self) || null;
+            const nodes = (_deviceMap && _deviceMap.nodes) || {};
+            for (const [name, node] of Object.entries(nodes)) {
+                const loc = _getNodeLocation(name, node);
+                if (loc) {
+                    const online = node.status ? _slotOnline(node.status) : false;
+                    const isSelf = name === selfName;
+                    located.push({ name, lat: loc.lat, lon: loc.lon, online, isSelf });
+                }
+            }
+            // Also check localStorage/manual locations for nodes not yet in device map
+            try {
+                const stored = JSON.parse(localStorage.getItem("mc_locations") || "{}");
+                for (const [name, loc] of Object.entries(stored)) {
+                    if (loc.lat && loc.lon && !located.find(n => n.name === name)) {
+                        located.push({ name, lat: loc.lat, lon: loc.lon, online: false, isSelf: false });
+                    }
+                }
+            } catch (_) { }
+            for (const [name, loc] of Object.entries(_manualLocations)) {
+                if (name === "_comment") continue;
+                if (loc.lat && loc.lon && !located.find(n => n.name === name)) {
+                    located.push({ name, lat: loc.lat, lon: loc.lon, online: false, isSelf: false });
+                }
+            }
+
+            const emptyMsg = document.getElementById("map-empty");
+            const container = document.getElementById("map-container");
+            if (!located.length) {
+                emptyMsg.style.display = "";
+                container.style.display = "none";
+                return;
+            }
+            emptyMsg.style.display = "none";
+            container.style.display = "";
+
+            // Don't initialize Leaflet on a hidden container — wait until the panel is open
+            if (!_mapOpen) return;
+
+            if (!_map) {
+                _map = L.map("map-container", {
+                    zoomControl: true,
+                    attributionControl: true,
+                });
+                L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+                    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+                    subdomains: "abcd",
+                    maxZoom: 19,
+                }).addTo(_map);
+            }
+
+            for (const m of _mapMarkers) _map.removeLayer(m);
+            _mapMarkers = [];
+
+            const bounds = [];
+            for (const { name, lat, lon, online, isSelf } of located) {
+                const color = isSelf ? "#4e9af1" : online ? "#4caf7d" : "#e05555";
+                const icon = L.divIcon({
+                    className: "",
+                    html: `<div style="
+                        width:14px;height:14px;border-radius:50%;
+                        background:${color};border:2px solid #fff;
+                        box-shadow:0 0 6px ${color}88;
+                    "></div>`,
+                    iconSize: [14, 14],
+                    iconAnchor: [7, 7],
+                });
+                const label = isSelf ? `<b>${escHtml(name)}</b> (self)` : `<b>${escHtml(name)}</b>`;
+                const status = isSelf ? "Connected" : online ? "Online" : "Offline";
+                const editLink = `<a href="#" onclick="event.preventDefault();_openLocEditor('${escHtml(name)}')" style="color:#4e9af1;font-size:0.75rem">✏️ Edit location</a>`;
+                const marker = L.marker([lat, lon], { icon })
+                    .bindPopup(`${label}<br>${status}<br><small>${lat.toFixed(5)}, ${lon.toFixed(5)}</small><br>${editLink}`)
+                    .addTo(_map);
+                _mapMarkers.push(marker);
+                bounds.push([lat, lon]);
+            }
+
+            if (!_mapFitted && bounds.length) {
+                _mapFitted = true;
+                if (bounds.length === 1) {
+                    _map.setView(bounds[0], 14);
+                } else {
+                    _map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+                }
+            }
+        }
+
+        // ── Location editor ─────────────────────────────────────────────────────
+        function _openLocEditor(focusNode) {
+            const overlay = document.getElementById("loc-overlay");
+            const list = document.getElementById("loc-list");
+            if (!_deviceMap || !_deviceMap.nodes) return;
+
+            let stored = {};
+            try { stored = JSON.parse(localStorage.getItem("mc_locations") || "{}"); } catch (_) { }
+
+            const allNames = Object.keys(_deviceMap.nodes);
+            list.innerHTML = allNames.map(name => {
+                const loc = _getNodeLocation(name, _deviceMap.nodes[name]);
+                const lat = loc ? loc.lat : "";
+                const lon = loc ? loc.lon : "";
+                return `<div class="loc-row">
+                    <span class="loc-name" title="${escHtml(name)}">${escHtml(name)}</span>
+                    <input type="number" step="any" placeholder="Latitude" data-node="${escHtml(name)}" data-field="lat" value="${lat}">
+                    <input type="number" step="any" placeholder="Longitude" data-node="${escHtml(name)}" data-field="lon" value="${lon}">
+                    <button class="loc-clear-btn" onclick="_clearLocRow(this)" title="Clear location">✕</button>
+                </div>`;
+            }).join("");
+
+            overlay.classList.add("open");
+            document.getElementById("loc-export-msg").style.display = "none";
+
+            // Focus the row for the requested node
+            if (focusNode) {
+                const inp = list.querySelector(`input[data-node="${CSS.escape(focusNode)}"][data-field="lat"]`);
+                if (inp) setTimeout(() => inp.focus(), 100);
+            }
+        }
+
+        function _closeLocEditor() {
+            document.getElementById("loc-overlay").classList.remove("open");
+        }
+
+        function _saveLocations() {
+            const inputs = document.querySelectorAll("#loc-list input");
+            const locs = {};
+            for (const inp of inputs) {
+                const name = inp.dataset.node;
+                const field = inp.dataset.field;
+                if (!locs[name]) locs[name] = {};
+                const val = parseFloat(inp.value);
+                if (!isNaN(val)) locs[name][field] = val;
+            }
+            // Only keep entries with both lat and lon
+            const clean = {};
+            for (const [name, loc] of Object.entries(locs)) {
+                if (loc.lat !== undefined && loc.lon !== undefined) {
+                    clean[name] = { lat: loc.lat, lon: loc.lon };
+                }
+            }
+            localStorage.setItem("mc_locations", JSON.stringify(clean));
+            _closeLocEditor();
+            _mapFitted = false;  // re-fit to new bounds
+            _updateMap();
+            if (_mapOpen && _map) setTimeout(() => _map.invalidateSize(), 100);
+        }
+
+        function _exportLocations() {
+            let stored = {};
+            try { stored = JSON.parse(localStorage.getItem("mc_locations") || "{}"); } catch (_) { }
+            // Merge: start from file locations, overlay with localStorage
+            const merged = Object.assign({}, _manualLocations, stored);
+            // Remove the _comment key if present
+            delete merged._comment;
+            const json = JSON.stringify(merged, null, 4);
+            navigator.clipboard.writeText(json).then(() => {
+                const msg = document.getElementById("loc-export-msg");
+                msg.style.display = "";
+                setTimeout(() => msg.style.display = "none", 3000);
+            }).catch(() => {
+                prompt("Copy this JSON into meshcore_locations.json:", json);
+            });
+        }
+
+        // ── Compose bar ───────────────────────────────────────────────────────────
+
+        function _populateComposeTargets() {
+            const sel = document.getElementById("compose-target");
+            if (!sel) return;
+            const prev = sel.value;
+            const prevText = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].textContent : "";
+            const wasReply = sel.options[sel.selectedIndex] ? !!sel.options[sel.selectedIndex].dataset.reply : false;
+            sel.innerHTML = "";
+
+            // Channel options from meshcore_channels.json
+            const chanEntries = Object.entries(_channelNames);
+            if (chanEntries.length) {
+                const grp = document.createElement("optgroup");
+                grp.label = "Channels";
+                for (const [idx, name] of chanEntries) {
+                    const o = document.createElement("option");
+                    o.value = `#${idx}`;
+                    o.textContent = name;
+                    grp.appendChild(o);
+                }
+                sel.appendChild(grp);
+            } else {
+                // fallback: always offer ch0
+                const o = document.createElement("option");
+                o.value = "#0";
+                o.textContent = "Ch 0 (flood)";
+                sel.appendChild(o);
+            }
+
+            // Node options from device map
+            if (_deviceMap && _deviceMap.nodes) {
+                const grp = document.createElement("optgroup");
+                grp.label = "Direct";
+                const selfName = _deviceMap.self || null;
+                for (const name of Object.keys(_deviceMap.nodes)) {
+                    if (name === selfName) continue;   // can't DM yourself
+                    const o = document.createElement("option");
+                    o.value = name;
+                    o.textContent = `➤ ${name}`;
+                    grp.appendChild(o);
+                }
+                if (grp.childElementCount) sel.appendChild(grp);
+            }
+
+            // Restore previous selection if still present
+            if (prev && [...sel.options].some(o => o.value === prev)) {
+                sel.value = prev;
+            } else if (prev && wasReply) {
+                // Re-inject the temporary reply option that was wiped by the rebuild
+                let tmp = document.createElement("option");
+                tmp.dataset.reply = "1";
+                tmp.value = prev;
+                tmp.textContent = prevText;
+                sel.appendChild(tmp);
+                sel.value = prev;
+            }
+        }
+
+        async function _sendMessage() {
+            const sel = document.getElementById("compose-target");
+            const input = document.getElementById("compose-input");
+            const btn = document.getElementById("compose-send");
+            const status = document.getElementById("compose-status");
+            if (!sel || !input || !btn) return;
+
+            const target = sel.value.trim();
+            const body = input.value.trim();
+            if (!body) return;
+
+            // Build the value string the plugin expects: "target: body" or "#idx: body"
+            const sendValue = `${target}: ${body}`;
+
+            // Look up the Mesh Send device idx from the device map
+            const sendIdx = _deviceMap && _deviceMap.send_idx;
+            if (!sendIdx) {
+                _setComposeStatus(status, "err", "Send device not found");
+                return;
+            }
+
+            btn.disabled = true;
+            _setComposeStatus(status, "", "⏳");
+
+            try {
+                const resp = await fetch(
+                    `/json.htm?type=command&param=udevice&idx=${sendIdx}&nvalue=0&svalue=${encodeURIComponent(sendValue)}`
+                );
+                const data = await resp.json();
+                if (data.status === "OK") {
+                    input.value = "";
+                    _clearReply();
+                    _setComposeStatus(status, "ok", "✓ Sent");
+                } else {
+                    _setComposeStatus(status, "err", data.message || "Error");
+                }
+            } catch (e) {
+                _setComposeStatus(status, "err", e.message);
+            } finally {
+                btn.disabled = false;
+            }
+            setTimeout(() => _setComposeStatus(status, "", ""), 4000);
+        }
+
+        function _setComposeStatus(el, cls, text) {
+            el.className = `compose-status ${cls}`.trim();
+            el.textContent = text;
+        }
+
+        // ── Emoji picker ──────────────────────────────────────────────────────────
+        const EMOJI_CATEGORIES = [
+            {
+                label: "Smileys & Emotion", emoji: [
+                    ["😀", "grinning face"], ["😃", "grinning big eyes"], ["😄", "grinning eyes"], ["😁", "beaming"], ["😆", "grinning squinting"], ["😅", "sweat smile"], ["🤣", "rolling floor laughing rofl"], ["😂", "joy tears laughing"], ["🙂", "slightly smiling"], ["🙃", "upside down"], ["😉", "wink"], ["😊", "smiling blush"], ["😇", "innocent halo"], ["🥰", "smiling hearts"], ["😍", "heart eyes love"], ["🤩", "star struck"], ["😘", "kiss blowing"], ["😗", "kissing"], ["😚", "kissing closed eyes"], ["😙", "kissing smiling"], ["🥲", "smiling tear"], ["😋", "yum delicious"], ["😛", "tongue out"], ["😜", "winking tongue"], ["🤪", "zany"], ["😝", "squinting tongue"], ["🤑", "money mouth"], ["🤗", "hugging"], ["🤭", "hand over mouth"], ["🤫", "shushing quiet"], ["🤔", "thinking"], ["🤐", "zipper mouth"], ["🤨", "raised eyebrow"], ["😐", "neutral"], ["😑", "expressionless"], ["😶", "no mouth"], ["😏", "smirk"], ["😒", "unamused"], ["🙄", "roll eyes"], ["😬", "grimace"], ["🤥", "lying"], ["😌", "relieved"], ["😔", "pensive"], ["😪", "sleepy"], ["🤤", "drooling"], ["😴", "sleeping"], ["😷", "medical mask sick"], ["🤒", "thermometer sick"], ["🤕", "head bandage hurt"], ["🤢", "nauseated"], ["🤮", "vomiting"], ["🤧", "sneezing"], ["🥵", "hot"], ["🥶", "cold"], ["🥴", "woozy"], ["😵", "dizzy"], ["🤯", "exploding head"], ["🤠", "cowboy"], ["🥳", "partying"], ["🥸", "disguised"], ["😎", "sunglasses cool"], ["🤓", "nerd glasses"], ["🧐", "monocle"], ["😕", "confused"], ["😟", "worried"], ["🙁", "slightly frowning"], ["☹️", "frowning"], ["😮", "open mouth"], ["😯", "hushed"], ["😲", "astonished"], ["😳", "flushed"], ["🥺", "pleading"], ["😦", "frowning open mouth"], ["😧", "anguished"], ["😨", "fearful"], ["😰", "anxious sweat"], ["😥", "sad relieved"], ["😢", "crying"], ["😭", "loudly crying sob"], ["😱", "screaming fear"], ["😖", "confounded"], ["😣", "persevering"], ["😞", "disappointed"], ["😓", "downcast sweat"], ["😩", "weary"], ["😫", "tired"], ["🥱", "yawning"], ["😤", "triumph steam"], ["😡", "pouting angry"], ["😠", "angry"], ["🤬", "cursing face"], ["😈", "smiling devil"], ["👿", "angry devil"], ["💀", "skull death"], ["☠️", "skull crossbones"], ["💩", "poop"], ["🤡", "clown"], ["👹", "ogre"], ["👺", "goblin"], ["👻", "ghost"], ["👽", "alien"], ["👾", "alien monster"], ["🤖", "robot"], ["😺", "grinning cat"], ["😸", "grinning cat eyes"], ["😹", "cat joy"], ["😻", "heart eyes cat"], ["😼", "cat smirk"], ["😽", "kissing cat"], ["🙀", "weary cat"], ["😿", "crying cat"], ["😾", "pouting cat"]
+                ]
+            },
+            {
+                label: "People & Body", emoji: [
+                    ["👋", "waving hand"], ["🤚", "raised back hand"], ["🖐️", "hand fingers splayed"], ["✋", "raised hand"], ["🖖", "vulcan salute"], ["👌", "ok hand"], ["🤌", "pinched fingers"], ["🤏", "pinching hand"], ["✌️", "victory hand"], ["🤞", "crossed fingers luck"], ["🤟", "love you gesture"], ["🤘", "sign of horns rock"], ["🤙", "call me hand"], ["👈", "backhand index left"], ["👉", "backhand index right"], ["👆", "backhand index up"], ["🖕", "middle finger"], ["👇", "backhand index down"], ["☝️", "index pointing up"], ["👍", "thumbs up like"], ["👎", "thumbs down dislike"], ["✊", "raised fist"], ["👊", "oncoming fist"], ["🤛", "left-facing fist"], ["🤜", "right-facing fist"], ["👏", "clapping hands"], ["🙌", "raising hands"], ["👐", "open hands"], ["🤲", "palms up"], ["🤝", "handshake"], ["🙏", "folded hands pray"], ["✍️", "writing hand"], ["💅", "nail polish"], ["🤳", "selfie"], ["💪", "flexed bicep muscle strong"], ["🦾", "mechanical arm"], ["🦿", "mechanical leg"], ["🦵", "leg"], ["🦶", "foot"], ["👂", "ear"], ["🦻", "ear hearing aid"], ["👃", "nose"], ["🫀", "heart organ"], ["🫁", "lungs"], ["🧠", "brain"], ["🦷", "tooth"], ["🦴", "bone"], ["👀", "eyes"], ["👁️", "eye"], ["👅", "tongue"], ["👄", "mouth lips"], ["🫦", "biting lip"], ["👶", "baby"], ["🧒", "child"], ["👦", "boy"], ["👧", "girl"], ["🧑", "person"], ["👱", "blond person"], ["👨", "man"], ["🧔", "person beard"], ["👩", "woman"], ["🧓", "older person"], ["👴", "old man"], ["👵", "old woman"], ["🙍", "person frowning"], ["🙎", "person pouting"], ["🙅", "no gesture"], ["🙆", "ok gesture"], ["💁", "information desk"], ["🙋", "raising hand"], ["🧏", "deaf person"], ["🙇", "bowing"], ["🤦", "facepalm"], ["🤷", "shrug"], ["🧑‍⚕️", "health worker"], ["👮", "police officer"], ["💂", "guard"], ["🕵️", "detective"], ["👷", "construction worker"], ["🤴", "prince"], ["👸", "princess"], ["🧙", "mage wizard"], ["🧚", "fairy"], ["🧛", "vampire"], ["🧜", "merperson"], ["🧝", "elf"], ["🦸", "superhero"], ["🦹", "supervillain"], ["🤶", "mrs claus"], ["🎅", "santa claus"], ["🧑‍🎄", "mx claus"], ["🥷", "ninja"], ["🤺", "fencer"], ["🏇", "horse racing"], ["⛷️", "skier"], ["🏂", "snowboarder"], ["🪂", "parachute"], ["🏋️", "weight lifter"], ["🤼", "wrestlers"], ["🤸", "cartwheel"], ["🤺", "fencer"], ["🏊", "swimmer"], ["🚴", "cyclist"], ["🛀", "bath"], ["🧖", "sauna"], ["🕴️", "levitating"], ["💃", "woman dancing"], ["🕺", "man dancing"], ["👫", "couple"], ["👬", "men holding hands"], ["👭", "women holding hands"], ["💏", "kiss couple"], ["💑", "couple heart"], ["👪", "family"]
+                ]
+            },
+            {
+                label: "Animals & Nature", emoji: [
+                    ["🐶", "dog face"], ["🐱", "cat face"], ["🐭", "mouse face"], ["🐹", "hamster"], ["🐰", "rabbit face"], ["🦊", "fox"], ["🐻", "bear"], ["🐼", "panda"], ["🐻‍❄️", "polar bear"], ["🐨", "koala"], ["🐯", "tiger face"], ["🦁", "lion"], ["🐮", "cow face"], ["🐷", "pig face"], ["🐸", "frog"], ["🐵", "monkey face"], ["🙈", "see no evil"], ["🙉", "hear no evil"], ["🙊", "speak no evil"], ["🐔", "chicken"], ["🐧", "penguin"], ["🐦", "bird"], ["🦆", "duck"], ["🦅", "eagle"], ["🦉", "owl"], ["🦇", "bat"], ["🐺", "wolf"], ["🐗", "boar"], ["🐴", "horse face"], ["🦄", "unicorn"], ["🐝", "honeybee"], ["🐛", "bug"], ["🦋", "butterfly"], ["🐌", "snail"], ["🐞", "lady beetle"], ["🐜", "ant"], ["🦟", "mosquito"], ["🦗", "cricket"], ["🦂", "scorpion"], ["🐢", "turtle"], ["🐍", "snake"], ["🦎", "lizard"], ["🦖", "t-rex dinosaur"], ["🐊", "crocodile"], ["🐠", "tropical fish"], ["🐟", "fish"], ["🐡", "blowfish"], ["🦈", "shark"], ["🐙", "octopus"], ["🦑", "squid"], ["🦞", "lobster"], ["🦀", "crab"], ["🐋", "whale"], ["🐬", "dolphin"], ["🐊", "crocodile"], ["🦭", "seal"], ["🌸", "cherry blossom"], ["💐", "bouquet flowers"], ["🌹", "rose"], ["🥀", "wilted flower"], ["🌺", "hibiscus"], ["🌻", "sunflower"], ["🌼", "blossom"], ["🌷", "tulip"], ["🌱", "seedling plant"], ["🌿", "herb leaf"], ["☘️", "shamrock clover"], ["🍀", "four leaf clover luck"], ["🎍", "pine decoration"], ["🌵", "cactus"], ["🌲", "evergreen tree"], ["🌳", "deciduous tree"], ["🌴", "palm tree"], ["🍄", "mushroom"], ["🌾", "wheat sheaf"], ["💧", "droplet water"], ["🌊", "wave ocean"], ["☀️", "sun"], ["🌤️", "sun cloud"], ["⛅", "partly cloudy"], ["🌧️", "rain cloud"], ["⛈️", "thunder lightning"], ["🌩️", "lightning"], ["🌪️", "tornado"], ["❄️", "snowflake cold"], ["🌈", "rainbow"], ["🌙", "crescent moon"], ["⭐", "star"], ["🌟", "glowing star"], ["💫", "dizzy star"], ["✨", "sparkles"], ["🔥", "fire hot flame"], ["💧", "droplet"], ["🌊", "wave"]
+                ]
+            },
+            {
+                label: "Food & Drink", emoji: [
+                    ["🍎", "red apple"], ["🍊", "tangerine orange"], ["🍋", "lemon"], ["🍇", "grapes"], ["🍓", "strawberry"], ["🫐", "blueberries"], ["🍈", "melon"], ["🍉", "watermelon"], ["🍑", "peach"], ["🍒", "cherries"], ["🍍", "pineapple"], ["🥭", "mango"], ["🥥", "coconut"], ["🍌", "banana"], ["🍐", "pear"], ["🫒", "olive"], ["🍅", "tomato"], ["🍆", "eggplant"], ["🥑", "avocado"], ["🌽", "corn"], ["🥕", "carrot"], ["🧅", "onion"], ["🧄", "garlic"], ["🥔", "potato"], ["🍠", "sweet potato"], ["🫑", "bell pepper"], ["🌶️", "hot pepper spicy"], ["🥦", "broccoli"], ["🫘", "beans"], ["🍞", "bread"], ["🥐", "croissant"], ["🥨", "pretzel"], ["🧀", "cheese"], ["🥚", "egg"], ["🍳", "cooking frying pan"], ["🥞", "pancakes"], ["🧇", "waffle"], ["🥓", "bacon"], ["🍗", "chicken leg"], ["🍖", "meat bone"], ["🌭", "hot dog"], ["🍔", "hamburger burger"], ["🍟", "french fries"], ["🍕", "pizza"], ["🌮", "taco"], ["🌯", "burrito wrap"], ["🥙", "stuffed flatbread"], ["🧆", "falafel"], ["🍜", "noodles ramen"], ["🍝", "spaghetti pasta"], ["🍛", "curry rice"], ["🍲", "stew pot"], ["🍣", "sushi"], ["🍱", "bento box"], ["🍦", "ice cream soft"], ["🍧", "shaved ice"], ["🍨", "ice cream"], ["🍩", "doughnut donut"], ["🍪", "cookie"], ["🎂", "birthday cake"], ["🍰", "shortcake"], ["🧁", "cupcake"], ["🍫", "chocolate bar"], ["🍬", "candy"], ["🍭", "lollipop"], ["☕", "coffee hot"], ["🍵", "tea"], ["🧋", "bubble tea boba"], ["🥤", "cup with straw"], ["🍺", "beer mug"], ["🍻", "clinking beers cheers"], ["🥂", "champagne toast"], ["🍷", "wine glass"], ["🥃", "tumbler whiskey"], ["🍹", "tropical drink cocktail"], ["🧃", "juice box"], ["🥛", "glass of milk"], ["🍾", "champagne bottle party"]
+                ]
+            },
+            {
+                label: "Travel & Places", emoji: [
+                    ["🚗", "car automobile"], ["🚕", "taxi cab"], ["🚙", "suv"], ["🚌", "bus"], ["🚎", "trolleybus"], ["🚐", "minibus"], ["🚑", "ambulance"], ["🚒", "fire engine"], ["🚓", "police car"], ["🚔", "oncoming police"], ["🚖", "oncoming taxi"], ["🚘", "oncoming car"], ["🚍", "oncoming bus"], ["🚋", "tram car"], ["🚃", "railway car"], ["🚝", "monorail"], ["🚄", "bullet train"], ["🚅", "bullet train front"], ["🚆", "train"], ["🚇", "metro subway"], ["🚈", "light rail"], ["🚉", "station"], ["🚊", "tram"], ["🚞", "mountain railway"], ["🚲", "bicycle bike"], ["🛴", "scooter kick"], ["🛵", "motor scooter"], ["🏍️", "motorcycle"], ["🛺", "auto rickshaw"], ["🚁", "helicopter"], ["🛸", "flying saucer ufo"], ["✈️", "airplane plane fly"], ["🛩️", "small airplane"], ["🚀", "rocket"], ["💺", "seat"], ["🛶", "canoe"], ["⛵", "sailboat"], ["🚤", "speedboat"], ["🛥️", "motor boat"], ["🛳️", "passenger ship"], ["⛴️", "ferry"], ["🚢", "ship"], ["⚓", "anchor"], ["🗺️", "world map"], ["🧭", "compass"], ["🏔️", "snow mountain"], ["⛰️", "mountain"], ["🌋", "volcano"], ["🗻", "mount fuji"], ["🏕️", "camping tent"], ["🏖️", "beach umbrella"], ["🏜️", "desert"], ["🏝️", "island"], ["🏟️", "stadium"], ["🏛️", "classical building"], ["🏗️", "construction"], ["🏘️", "houses"], ["🏚️", "derelict house"], ["🏠", "house"], ["🏡", "house garden"], ["🏢", "office building"], ["🏣", "post office"], ["🏤", "post office european"], ["🏥", "hospital"], ["🏦", "bank"], ["🏨", "hotel"], ["🏩", "love hotel"], ["🏪", "convenience store"], ["🏫", "school"], ["🏬", "department store"], ["🏭", "factory"], ["🏯", "japanese castle"], ["🏰", "castle"], ["💒", "wedding chapel"], ["🗼", "tokyo tower"], ["🗽", "statue liberty"], ["⛪", "church"], ["🕌", "mosque"], ["🛕", "hindu temple"], ["🕍", "synagogue"], ["⛩️", "shinto shrine"], ["🕋", "kaaba"]
+                ]
+            },
+            {
+                label: "Activities", emoji: [
+                    ["⚽", "soccer ball football"], ["🏀", "basketball"], ["🏈", "american football"], ["⚾", "baseball"], ["🥎", "softball"], ["🏐", "volleyball"], ["🏉", "rugby football"], ["🥏", "flying disc frisbee"], ["🎾", "tennis"], ["🏸", "badminton"], ["🏒", "ice hockey"], ["🏑", "field hockey"], ["🥍", "lacrosse"], ["🏓", "ping pong table tennis"], ["🏏", "cricket"], ["🥊", "boxing glove"], ["🥋", "martial arts"], ["⛳", "golf"], ["⛸️", "ice skate"], ["🎣", "fishing"], ["🤿", "diving mask"], ["🎽", "running shirt"], ["🎿", "skis"], ["🛷", "sled"], ["🥌", "curling stone"], ["🏆", "trophy winner"], ["🥇", "gold medal"], ["🥈", "silver medal"], ["🥉", "bronze medal"], ["🎖️", "medal military"], ["🎗️", "reminder ribbon"], ["🎪", "circus tent"], ["🤹", "juggling"], ["🎭", "performing arts theatre"], ["🎨", "art palette painting"], ["🎬", "clapper board film"], ["🎤", "microphone"], ["🎧", "headphone"], ["🎼", "musical score"], ["🎵", "musical note"], ["🎶", "musical notes"], ["🎹", "piano keyboard"], ["🥁", "drum"], ["🎷", "saxophone"], ["🎺", "trumpet"], ["🎸", "guitar"], ["🎻", "violin"], ["🪕", "banjo"], ["🎮", "video game controller"], ["🕹️", "joystick"], ["🎲", "game dice"], ["🧩", "puzzle piece"], ["♟️", "chess pawn"], ["🪄", "magic wand"]
+                ]
+            },
+            {
+                label: "Objects", emoji: [
+                    ["📱", "mobile phone"], ["💻", "laptop computer"], ["🖥️", "desktop computer"], ["🖨️", "printer"], ["⌨️", "keyboard"], ["🖱️", "mouse"], ["🖲️", "trackball"], ["💾", "floppy disk"], ["💿", "cd disc"], ["📀", "dvd"], ["📷", "camera"], ["📸", "camera flash"], ["📹", "video camera"], ["🎥", "movie camera film"], ["📡", "satellite antenna radio"], ["📺", "television tv"], ["📻", "radio"], ["🧭", "compass navigation"], ["⏱️", "stopwatch"], ["⏰", "alarm clock"], ["🕰️", "mantelpiece clock"], ["⌚", "watch"], ["📡", "satellite dish"], ["🔋", "battery power"], ["🔌", "electric plug"], ["💡", "light bulb idea"], ["🔦", "flashlight torch"], ["🕯️", "candle"], ["🪔", "diya lamp"], ["🧯", "fire extinguisher"], ["🛢️", "oil drum"], ["💰", "money bag"], ["💴", "yen"], ["💵", "dollar"], ["💶", "euro"], ["💷", "pound"], ["💸", "money wings"], ["💳", "credit card"], ["🪙", "coin"], ["📈", "chart up"], ["📉", "chart down"], ["📊", "bar chart"], ["📋", "clipboard"], ["📌", "pushpin"], ["📍", "round pushpin"], ["📎", "paperclip"], ["🖇️", "linked paperclips"], ["📐", "triangular ruler"], ["📏", "straight ruler"], ["✂️", "scissors cut"], ["🗃️", "card file box"], ["🗄️", "file cabinet"], ["🗑️", "wastebasket trash"], ["🔒", "locked padlock"], ["🔓", "unlocked padlock"], ["🔑", "key"], ["🗝️", "old key"], ["🔨", "hammer"], ["🪓", "axe"], ["⛏️", "pick"], ["⚒️", "hammer pick"], ["🛠️", "hammer wrench tools"], ["🔧", "wrench"], ["🪛", "screwdriver"], ["🔩", "nut bolt"], ["🪝", "hook"], ["🧲", "magnet"], ["🔫", "pistol water gun"], ["🪃", "boomerang"], ["🏹", "bow arrow"], ["🪚", "carpentry saw"], ["🔬", "microscope science"], ["🔭", "telescope space"], ["📡", "satellite"], ["💉", "syringe injection"], ["🩺", "stethoscope medical"], ["💊", "pill medicine"], ["🩻", "x-ray"], ["🩹", "bandage"], ["🚪", "door"], ["🪞", "mirror"], ["🪟", "window"], ["🛋️", "couch sofa"], ["🪑", "chair seat"], ["🚽", "toilet"], ["🚿", "shower"], ["🛁", "bathtub"], ["📦", "package box"], ["📬", "mailbox open"], ["📮", "postbox"], ["🗳️", "ballot box vote"], ["📝", "memo pencil"], ["📖", "open book"], ["📚", "books"], ["📰", "newspaper"], ["🗞️", "rolled newspaper"], ["🏷️", "label tag"], ["🔖", "bookmark"], ["🪧", "placard sign"], ["💊", "pill"]
+                ]
+            },
+            {
+                label: "Symbols", emoji: [
+                    ["❤️", "red heart love"], ["🧡", "orange heart"], ["💛", "yellow heart"], ["💚", "green heart"], ["💙", "blue heart"], ["💜", "purple heart"], ["🖤", "black heart"], ["🤍", "white heart"], ["🤎", "brown heart"], ["💔", "broken heart"], ["❤️‍🔥", "heart on fire"], ["❤️‍🩹", "mending heart"], ["💕", "two hearts"], ["💞", "revolving hearts"], ["💓", "beating heart"], ["💗", "growing heart"], ["💖", "sparkling heart"], ["💘", "heart arrow"], ["💝", "heart ribbon"], ["💟", "heart decoration"], ["☮️", "peace symbol"], ["✝️", "cross"], ["☯️", "yin yang"], ["✅", "check mark green"], ["☑️", "check box"], ["🔘", "radio button"], ["🔴", "red circle"], ["🟠", "orange circle"], ["🟡", "yellow circle"], ["🟢", "green circle"], ["🔵", "blue circle"], ["🟣", "purple circle"], ["⚫", "black circle"], ["⚪", "white circle"], ["🔺", "red triangle up"], ["🔻", "red triangle down"], ["💠", "diamond blue"], ["🔷", "blue diamond large"], ["🔹", "blue diamond small"], ["🔶", "orange diamond large"], ["🔸", "orange diamond small"], ["▶️", "play button"], ["⏸️", "pause button"], ["⏹️", "stop button"], ["⏺️", "record button"], ["⏭️", "next track"], ["⏮️", "previous track"], ["🔀", "shuffle"], ["🔁", "repeat"], ["🔂", "repeat one"], ["🔼", "up button"], ["🔽", "down button"], ["⏫", "fast up"], ["⏬", "fast down"], ["⏩", "fast forward"], ["⏪", "rewind"], ["❌", "cross mark x"], ["⭕", "hollow circle"], ["🚫", "prohibited no"], ["⛔", "no entry"], ["📛", "name badge"], ["🔞", "no under eighteen"], ["❓", "question mark"], ["❗", "exclamation mark"], ["‼️", "double exclamation"], ["⚠️", "warning caution"], ["🔔", "bell notification"], ["🔕", "bell slash muted"], ["🔇", "muted speaker"], ["🔈", "low volume"], ["🔉", "medium volume"], ["🔊", "loud volume"], ["📣", "megaphone"], ["📢", "loudspeaker"], ["💬", "speech bubble"], ["💭", "thought bubble"], ["💤", "zzz sleep"], ["♻️", "recycling"], ["✅", "check"], ["💯", "hundred percent"], ["🆗", "ok"], ["🆕", "new"], ["🆙", "up"], ["🆒", "cool"], ["🆓", "free"], ["🆖", "ng"], ["🅰️", "blood type a"], ["🅱️", "blood type b"], ["🆎", "ab button"], ["🆑", "cl button"], ["🅾️", "blood type o"], ["🆘", "sos"], ["⛽", "fuel pump"], ["🚦", "vertical traffic light"], ["🚥", "horizontal traffic light"], ["🛑", "stop sign"], ["🚧", "construction barrier"], ["📶", "signal bars"], ["🔋", "battery"], ["🌐", "globe internet"], ["#️⃣", "hash"], ["*️⃣", "asterisk"], ["0️⃣", "zero"], ["1️⃣", "one"], ["2️⃣", "two"], ["3️⃣", "three"], ["4️⃣", "four"], ["5️⃣", "five"]
+                ]
+            },
+            {
+                label: "Flags", emoji: [
+                    ["🏁", "chequered flag"], ["🚩", "triangular flag"], ["🎌", "crossed flags"], ["🏴", "black flag"], ["🏳️", "white flag"], ["🏳️‍🌈", "rainbow flag pride"], ["🏳️‍⚧️", "transgender flag"], ["🏴‍☠️", "pirate flag"], ["🌍", "earth africa europe"], ["🌎", "earth americas"], ["🌏", "earth asia"]
+                ]
+            },
+        ];
+
+        // Flat list for searching across all categories
+        const EMOJI_FLAT = EMOJI_CATEGORIES.flatMap(c => c.emoji);
+
+        let _emojiOpen = false;
+
+        function _buildEmojiGrid(list, categorised) {
+            const grid = document.getElementById("emoji-grid");
+            if (!grid) return;
+            const cell = (e, kw) => `<div class="emoji-cell" data-emoji="${e.replace(/"/g, '&quot;')}" title="${kw}">${e}</div>`;
+            if (categorised) {
+                grid.innerHTML = EMOJI_CATEGORIES.map(cat =>
+                    `<div class="emoji-category-label">${cat.label}</div>` +
+                    cat.emoji.map(([e, kw]) => cell(e, kw)).join("")
+                ).join("");
+            } else {
+                grid.innerHTML = list.map(([e, kw]) => cell(e, kw)).join("");
+            }
+        }
+
+        function _filterEmoji(q) {
+            const needle = q.trim().toLowerCase();
+            if (!needle) {
+                _buildEmojiGrid(null, true);
+            } else {
+                const filtered = EMOJI_FLAT.filter(([, kw]) => kw.includes(needle));
+                _buildEmojiGrid(filtered, false);
+            }
+        }
+
+        function _toggleEmojiPicker(evt) {
+            evt.stopPropagation();
+            const picker = document.getElementById("emoji-picker");
+            if (!picker) return;
+            _emojiOpen = !_emojiOpen;
+            if (_emojiOpen) {
+                _buildEmojiGrid(null, true);
+                const search = document.getElementById("emoji-picker-search");
+                if (search) search.value = "";
+                picker.classList.add("open");
+            } else {
+                picker.classList.remove("open");
+            }
+        }
+
+        function _insertEmoji(emoji) {
+            const input = document.getElementById("compose-input");
+            if (!input) return;
+            const start = input.selectionStart ?? input.value.length;
+            const end = input.selectionEnd ?? input.value.length;
+            input.value = input.value.slice(0, start) + emoji + input.value.slice(end);
+            const pos = start + emoji.length;
+            input.setSelectionRange(pos, pos);
+            input.focus();
+            // close picker
+            const picker = document.getElementById("emoji-picker");
+            if (picker) picker.classList.remove("open");
+            _emojiOpen = false;
+        }
+
+        // Single delegated listener: handles emoji cell clicks AND outside-click close
+        if (!window._mcEmojiListenerAdded) {
+            window._mcEmojiListenerAdded = true;
+            document.addEventListener("click", (e) => {
+            const cell = e.target.closest(".emoji-cell");
+            if (cell && cell.dataset.emoji) {
+                e.stopPropagation();
+                _insertEmoji(cell.dataset.emoji);
+                return;
+            }
+            if (!_emojiOpen) return;
+            const picker = document.getElementById("emoji-picker");
+            const btn = document.getElementById("emoji-btn");
+            if (picker && !picker.contains(e.target) && e.target !== btn) {
+                picker.classList.remove("open");
+                _emojiOpen = false;
+            }
+        });
+        }
+
+        function _clearReply() {
+            // Remove any @[Username] prefix from the input
+            const input = document.getElementById("compose-input");
+            if (input) input.value = input.value.replace(/^@\[[^\]]*\]\s*/, "");
+        }
+
+        function _replyTo(evt, sender, channel) {
+            evt.stopPropagation();
+            const sel = document.getElementById("compose-target");
+            const input = document.getElementById("compose-input");
+            if (!sel || !input) return;
+
+            // For channel messages, reply to the same channel (not the sender directly).
+            // For private messages (no channel), reply directly to the sender node.
+            if (channel) {
+                // Find the matching channel option by value label — channel is the display name (e.g. "Public")
+                const chanOpt = [...sel.options].find(o => o.textContent === channel || o.textContent.replace(/^#\s*/, "") === channel);
+                if (chanOpt) {
+                    sel.value = chanOpt.value;
+                } else {
+                    // Channel not in list yet — add a temporary option
+                    let tmp = sel.querySelector(`option[data-reply="1"]`);
+                    if (!tmp) {
+                        tmp = document.createElement("option");
+                        tmp.dataset.reply = "1";
+                        sel.appendChild(tmp);
+                    }
+                    // Derive the #idx value from the channel name via _channelNames
+                    const chanIdx = Object.entries(_channelNames).find(([, n]) => n === channel);
+                    tmp.value = chanIdx ? `#${chanIdx[0]}` : `#0`;
+                    tmp.textContent = `# ${channel} (reply)`;
+                    sel.value = tmp.value;
+                }
+                // Pre-fill the input with @[Username] so the reply is addressed
+                const mention = `@[${sender}] `;
+                if (!input.value.startsWith(mention)) {
+                    input.value = mention + input.value;
+                }
+            } else {
+                // Private message — reply directly to the sender node
+                const opt = [...sel.options].find(o => o.value === sender);
+                if (opt) {
+                    sel.value = sender;
+                } else {
+                    let tmp = sel.querySelector(`option[data-reply="1"]`);
+                    if (!tmp) {
+                        tmp = document.createElement("option");
+                        tmp.dataset.reply = "1";
+                        sel.appendChild(tmp);
+                    }
+                    tmp.value = sender;
+                    tmp.textContent = `➤ ${sender} (reply)`;
+                    sel.value = sender;
+                }
+            }
+
+            input.focus();
+            // Place cursor at the end of the input
+            input.setSelectionRange(input.value.length, input.value.length);
+            // Scroll the compose bar into view in case the inbox list is long.
+            document.getElementById("compose-bar").scrollIntoView({ behavior: "smooth", block: "nearest" });
+        }
+
+        // Expose functions referenced by inline HTML event handlers to global scope
+        window.loadData            = loadData;
+        window._onInboxSearch      = _onInboxSearch;
+        window._sendMessage        = _sendMessage;
+        window._toggleEmojiPicker  = _toggleEmojiPicker;
+        window._filterEmoji        = _filterEmoji;
+        window._replyTo            = _replyTo;
+        window._toggleMap          = _toggleMap;
+        window._openLocEditor      = _openLocEditor;
+        window._closeLocEditor     = _closeLocEditor;
+        window._saveLocations      = _saveLocations;
+        window._exportLocations    = _exportLocations;
+        window._clearLocRow        = function(btn) {
+            const row = btn.closest(".loc-row");
+            if (!row) return;
+            row.querySelectorAll("input").forEach(inp => inp.value = "");
+        };
+    })();
+    </script>
+</body>
+</html>

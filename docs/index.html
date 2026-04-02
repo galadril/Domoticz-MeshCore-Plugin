@@ -1,0 +1,827 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domoticz — MeshCore Dashboard</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <style>
+        /* ── Reset ──────────────────────────────────────────────── */
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        /* ── Domoticz chrome ────────────────────────────────────── */
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            background: #1b1d25;
+            min-height: 100vh;
+        }
+
+        #dz-nav {
+            background: #23252f;
+            border-bottom: 1px solid #2e3040;
+            display: flex;
+            align-items: center;
+            padding: 0 20px;
+            height: 54px;
+            position: sticky;
+            top: 0;
+            z-index: 200;
+            gap: 0;
+        }
+        #dz-logo {
+            display: flex;
+            align-items: center;
+            gap: 9px;
+            margin-right: 28px;
+            text-decoration: none;
+            flex-shrink: 0;
+        }
+        #dz-logo .dz-icon {
+            width: 30px;
+            height: 30px;
+            background: linear-gradient(135deg, #4e9af1, #2d6ec7);
+            border-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.65rem;
+            font-weight: 900;
+            color: #fff;
+            letter-spacing: -0.03em;
+        }
+        #dz-logo .dz-wordmark {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #e2e4ed;
+            letter-spacing: 0.01em;
+        }
+        #dz-logo .dz-wordmark span { color: #4e9af1; }
+
+        #dz-tabs {
+            display: flex;
+            height: 54px;
+            flex: 1;
+            overflow-x: auto;
+            scrollbar-width: none;
+        }
+        #dz-tabs::-webkit-scrollbar { display: none; }
+        .dz-tab {
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            font-size: 0.82rem;
+            color: #7c7f93;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            white-space: nowrap;
+            transition: color 0.15s;
+            text-decoration: none;
+            gap: 6px;
+        }
+        .dz-tab:hover { color: #b0b3c6; }
+        .dz-tab.active { color: #e2e4ed; border-bottom-color: #4e9af1; }
+        .dz-tab-icon { font-size: 0.95rem; opacity: 0.8; }
+
+        #dz-right {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-left: auto;
+            flex-shrink: 0;
+        }
+        .dz-nav-icon {
+            color: #7c7f93;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: color 0.15s;
+            position: relative;
+        }
+        .dz-nav-icon:hover { color: #e2e4ed; }
+        .dz-badge-dot {
+            position: absolute;
+            top: -3px;
+            right: -3px;
+            width: 7px;
+            height: 7px;
+            background: #4caf7d;
+            border-radius: 50%;
+            border: 1.5px solid #23252f;
+        }
+        #dz-user {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            cursor: pointer;
+        }
+        .dz-avatar {
+            width: 30px;
+            height: 30px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, #4e9af1, #2d6ec7);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.72rem;
+            font-weight: 700;
+            color: #fff;
+        }
+        #dz-username { font-size: 0.8rem; color: #7c7f93; }
+
+        /* Breadcrumb bar */
+        #dz-breadcrumb {
+            background: #20222c;
+            border-bottom: 1px solid #2a2c38;
+            padding: 7px 24px;
+            font-size: 0.76rem;
+            color: #7c7f93;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        #dz-breadcrumb a { color: #4e9af1; text-decoration: none; }
+        #dz-breadcrumb a:hover { text-decoration: underline; }
+        .dz-sep { opacity: 0.45; font-size: 0.7rem; }
+
+        /* Page content wrapper */
+        #dz-page {
+            padding: 0;
+        }
+
+        /* ── MeshCore dashboard ─────────────────────────────────── */
+        :root {
+            --bg: #1e1f26;
+            --surface: #2a2b35;
+            --border: #3a3b47;
+            --accent: #4e9af1;
+            --green: #4caf7d;
+            --red: #e05555;
+            --yellow: #f0a832;
+            --text: #e2e4ed;
+            --muted: #7c7f93;
+            --radius: 10px;
+        }
+
+        #mc-wrap {
+            background: var(--bg);
+            color: var(--text);
+            padding: 20px;
+            min-height: calc(100vh - 54px - 33px);
+        }
+
+        header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 24px;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        header h1 {
+            font-size: 1.4rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        header h1 span.logo {
+            background: var(--accent);
+            color: #fff;
+            border-radius: 6px;
+            padding: 2px 8px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+        }
+        #last-updated { font-size: 0.8rem; color: var(--muted); }
+        #refresh-btn {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            color: var(--text);
+            border-radius: 6px;
+            padding: 5px 12px;
+            cursor: pointer;
+            font-size: 0.85rem;
+        }
+
+        /* ── Layout ─────────────────────────────────────────────── */
+        #main-layout { display: flex; align-items: flex-start; }
+        #self-section { flex: 0 0 400px; }
+        #layout-divider {
+            flex: 0 0 1px;
+            background: var(--border);
+            align-self: stretch;
+            margin: 0 36px;
+            margin-top: 36px;
+            min-height: 80px;
+            opacity: 0.29;
+        }
+        #contacts-section { flex: 1; min-width: 0; }
+
+        .section-title {
+            font-size: 0.72rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.09em;
+            color: var(--muted);
+            margin: 0 0 12px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        /* ── Cards ──────────────────────────────────────────────── */
+        #self-grid .node-card { width: 100%; }
+        #contacts-grid { display: flex; flex-wrap: wrap; gap: 14px; }
+        #contacts-grid .node-card { width: 280px; flex-shrink: 0; }
+
+        .node-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            overflow: hidden;
+        }
+        .node-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 18px;
+            border-bottom: 1px solid var(--border);
+        }
+        .node-name { font-weight: 600; font-size: 1rem; }
+        .badge {
+            font-size: 0.7rem; font-weight: 700;
+            text-transform: uppercase; letter-spacing: 0.06em;
+            border-radius: 20px; padding: 3px 10px;
+        }
+        .badge.online  { background: #1a3d2b; color: var(--green); }
+        .badge.offline { background: #3d1a1a; color: var(--red); }
+        .badge.self    { background: #1a2e3d; color: var(--accent); }
+
+        .node-metrics {
+            padding: 12px 18px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 12px;
+        }
+        .metric { display: flex; flex-direction: column; gap: 2px; }
+        .metric-label {
+            font-size: 0.68rem; text-transform: uppercase;
+            letter-spacing: 0.06em; color: var(--muted);
+        }
+        .metric-value { font-size: 0.9rem; font-weight: 500; color: var(--text); }
+        .metric-value.na { color: var(--muted); font-style: italic; }
+
+        .batt-wrap { display: flex; align-items: center; gap: 6px; }
+        .batt-bar-bg {
+            flex: 1; height: 6px;
+            background: var(--border); border-radius: 3px; overflow: hidden;
+        }
+        .batt-bar-fill { height: 100%; border-radius: 3px; }
+        .batt-bar-fill.high   { background: var(--green); }
+        .batt-bar-fill.medium { background: var(--yellow); }
+        .batt-bar-fill.low    { background: var(--red); }
+
+        /* Signal quality bar */
+        .signal-wrap { display: flex; align-items: center; gap: 6px; }
+        .signal-bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+        .signal-bars .bar {
+            width: 4px; border-radius: 1px;
+            background: var(--border); transition: background 0.3s;
+        }
+        .signal-bars .bar.active.excellent { background: var(--green); }
+        .signal-bars .bar.active.good      { background: var(--yellow); }
+        .signal-bars .bar.active.poor      { background: var(--red); }
+
+        /* Node map */
+        #map-section { margin-top: 32px; }
+        #map-toggle {
+            display: flex; align-items: center; justify-content: space-between;
+            cursor: pointer; user-select: none;
+            margin-bottom: 0; padding-bottom: 8px;
+            border-bottom: 1px solid var(--border);
+        }
+        #map-toggle .section-title { margin: 0; padding: 0; border: none; }
+        #map-toggle .toggle-arrow {
+            font-size: 0.7rem; color: var(--muted);
+            transition: transform 0.2s;
+        }
+        #map-toggle .toggle-arrow.open { transform: rotate(90deg); }
+        #map-body {
+            overflow: hidden; transition: max-height 0.3s ease, opacity 0.3s ease;
+            max-height: 0; opacity: 0;
+        }
+        #map-body.open { max-height: 500px; opacity: 1; margin-top: 12px; }
+        #map-container {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); overflow: hidden; height: 300px;
+        }
+        #map-container .leaflet-popup-content-wrapper {
+            background: var(--surface); color: var(--text);
+            border-radius: 8px; box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+        }
+        #map-container .leaflet-popup-tip { background: var(--surface); }
+        #map-container .leaflet-popup-content { font-size: 0.82rem; line-height: 1.5; }
+        #map-container .leaflet-popup-content b { color: var(--accent); }
+
+        /* ── Inbox ──────────────────────────────────────────────── */
+        #inbox-history-section { margin-top: 32px; }
+        .inbox-section-header {
+            display: flex; align-items: center;
+            justify-content: space-between; margin-bottom: 12px;
+        }
+        .inbox-section-header h2 {
+            font-size: 0.9rem; font-weight: 600;
+            text-transform: uppercase; letter-spacing: 0.07em; color: var(--muted);
+        }
+        #inbox-log-link {
+            font-size: 0.8rem; color: var(--accent); text-decoration: none;
+            padding: 4px 10px; border: 1px solid var(--border);
+            border-radius: 6px; background: var(--surface);
+        }
+        #inbox-history {
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); max-height: 320px; overflow-y: auto;
+        }
+        .inbox-msg {
+            display: flex; align-items: baseline; gap: 10px;
+            padding: 10px 16px; border-bottom: 1px solid var(--border);
+            font-size: 0.88rem; line-height: 1.4;
+        }
+        .inbox-msg:last-child { border-bottom: none; }
+        .msg-time { color: var(--muted); font-size: 0.75rem; white-space: nowrap; flex-shrink: 0; min-width: 130px; }
+        .msg-sender { color: var(--accent); font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+        .msg-text { color: var(--text); word-break: break-word; }
+        .msg-chan {
+            font-size: 0.7rem; font-weight: 600; padding: 1px 6px;
+            border-radius: 4px; white-space: nowrap; flex-shrink: 0;
+            background: var(--border); color: var(--muted);
+        }
+        .msg-chan.private { background: #2a3a4a; color: #7ab; }
+
+        /* ── Inbox filters ──────────────────────────────────────── */
+        #inbox-filters { display: flex; align-items: center; gap: 6px; margin-bottom: 10px; flex-wrap: wrap; }
+        #inbox-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+        .filter-btn {
+            font-size: 0.75rem; padding: 3px 10px; border-radius: 20px;
+            border: 1px solid var(--border); background: var(--surface);
+            color: var(--muted); cursor: pointer;
+        }
+        .filter-btn.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+        #inbox-search {
+            font-size: 0.75rem; padding: 3px 10px; border-radius: 20px;
+            border: 1px solid var(--border); background: var(--surface);
+            color: var(--text); outline: none; width: 160px; margin-left: auto;
+        }
+
+        /* ── Compose ────────────────────────────────────────────── */
+        #compose-bar {
+            display: flex; align-items: center; gap: 8px; margin-bottom: 14px;
+            background: var(--surface); border: 1px solid var(--border);
+            border-radius: var(--radius); padding: 10px 14px;
+        }
+        #compose-target {
+            font-size: 0.82rem; padding: 5px 10px; border-radius: 6px;
+            border: 1px solid var(--border); background: var(--bg); color: var(--text); outline: none;
+        }
+        #compose-input {
+            flex: 1; font-size: 0.88rem; padding: 5px 10px; border-radius: 6px;
+            border: 1px solid var(--border); background: var(--bg); color: var(--text);
+            outline: none; min-width: 0;
+        }
+        #compose-send {
+            background: var(--accent); color: #fff; border: none; border-radius: 6px;
+            padding: 5px 14px; cursor: pointer; font-size: 0.85rem; font-weight: 600;
+        }
+
+        @media (max-width: 900px) {
+            #main-layout { flex-direction: column; }
+            #layout-divider { flex: none; width: 100%; height: 1px; margin: 24px 0; min-height: 0; opacity: 0.29; }
+            #self-section, #contacts-section { flex: none; width: 100%; }
+            #contacts-grid .node-card { width: auto; flex: 1 1 220px; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ── Domoticz navbar ────────────────────────────────────────── -->
+<nav id="dz-nav">
+    <a id="dz-logo" href="#">
+        <div class="dz-icon">DZ</div>
+        <div class="dz-wordmark">Domoti<span>cz</span></div>
+    </a>
+    <div id="dz-tabs">
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">⊞</span>Dashboard</a>
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">⚡</span>Switches</a>
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">🌡</span>Temperature</a>
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">🔒</span>Security</a>
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">⚙</span>Utility</a>
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">🌦</span>Weather</a>
+        <a class="dz-tab active" href="#"><span class="dz-tab-icon">📡</span>MeshCore</a>
+        <a class="dz-tab" href="#"><span class="dz-tab-icon">⚙</span>Setup</a>
+    </div>
+    <div id="dz-right">
+        <div class="dz-nav-icon">
+            🔔
+            <span class="dz-badge-dot"></span>
+        </div>
+        <div id="dz-user">
+            <div class="dz-avatar">A</div>
+            <span id="dz-username">admin</span>
+        </div>
+    </div>
+</nav>
+
+<!-- ── Breadcrumb ─────────────────────────────────────────────── -->
+<div id="dz-breadcrumb">
+    <a href="#">Home</a>
+    <span class="dz-sep">›</span>
+    <a href="#">Custom Pages</a>
+    <span class="dz-sep">›</span>
+    MeshCore Dashboard
+</div>
+
+<!-- ── MeshCore page content ─────────────────────────────────── -->
+<div id="dz-page">
+<div id="mc-wrap">
+
+    <header>
+        <h1><span class="logo">MC</span> MeshCore Dashboard</h1>
+        <div style="display:flex;align-items:center;gap:14px">
+            <span id="last-updated">Updated 15:42:08</span>
+            <button id="refresh-btn">↻ Refresh</button>
+        </div>
+    </header>
+
+    <div id="main-layout">
+
+        <!-- ── Connected node ─────────────────────────────── -->
+        <section id="self-section">
+            <h2 class="section-title">Connected Node</h2>
+            <div id="self-grid">
+                <div class="node-card">
+                    <div class="node-header">
+                        <span class="node-name">HomeBase</span>
+                        <span class="badge self">Connected</span>
+                    </div>
+                    <div class="node-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Battery</span>
+                            <span class="metric-value">
+                                <div class="batt-wrap">
+                                    <span>87%</span>
+                                    <div class="batt-bar-bg">
+                                        <div class="batt-bar-fill high" style="width:87%"></div>
+                                    </div>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Voltage</span>
+                            <span class="metric-value">3.85 V</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">RSSI</span>
+                            <span class="metric-value">−65 dBm</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">SNR</span>
+                            <span class="metric-value">
+                                <div class="signal-wrap">
+                                    <div class="signal-bars">
+                                        <div class="bar active excellent" style="height:4px"></div>
+                                        <div class="bar active excellent" style="height:7px"></div>
+                                        <div class="bar active excellent" style="height:10px"></div>
+                                        <div class="bar active excellent" style="height:14px"></div>
+                                    </div>
+                                    <span>9.5 dB</span>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Noise Floor</span>
+                            <span class="metric-value">−91 dBm</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Uptime</span>
+                            <span class="metric-value">1d 23h 27m</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">TX Air</span>
+                            <span class="metric-value">18.4 s</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Pkts Sent</span>
+                            <span class="metric-value">2341</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Pkts Recv</span>
+                            <span class="metric-value">8127</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">Last Seen</span>
+                            <span class="metric-value">2026-04-01 15:42:08</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- ── Vertical divider ───────────────────────────── -->
+        <div id="layout-divider"></div>
+
+        <!-- ── Contacts ───────────────────────────────────── -->
+        <section id="contacts-section">
+            <h2 class="section-title">Contacts</h2>
+            <div id="contacts-grid">
+
+                <!-- Garden — online -->
+                <div class="node-card">
+                    <div class="node-header">
+                        <span class="node-name">Garden</span>
+                        <span class="badge online">Online</span>
+                    </div>
+                    <div class="node-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Hops</span>
+                            <span class="metric-value">1</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">SNR</span>
+                            <span class="metric-value">
+                                <div class="signal-wrap">
+                                    <div class="signal-bars">
+                                        <div class="bar active excellent" style="height:4px"></div>
+                                        <div class="bar active excellent" style="height:7px"></div>
+                                        <div class="bar active excellent" style="height:10px"></div>
+                                        <div class="bar active excellent" style="height:14px"></div>
+                                    </div>
+                                    <span>7.2 dB</span>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="metric" style="grid-column:1/-1">
+                            <span class="metric-label">Last Seen</span>
+                            <span class="metric-value">2026-04-01 15:38:22</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Garage — online -->
+                <div class="node-card">
+                    <div class="node-header">
+                        <span class="node-name">Garage</span>
+                        <span class="badge online">Online</span>
+                    </div>
+                    <div class="node-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Hops</span>
+                            <span class="metric-value">2</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">SNR</span>
+                            <span class="metric-value">
+                                <div class="signal-wrap">
+                                    <div class="signal-bars">
+                                        <div class="bar active excellent" style="height:4px"></div>
+                                        <div class="bar active excellent" style="height:7px"></div>
+                                        <div class="bar active excellent" style="height:10px"></div>
+                                        <div class="bar" style="height:14px"></div>
+                                    </div>
+                                    <span>4.8 dB</span>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="metric" style="grid-column:1/-1">
+                            <span class="metric-label">Last Seen</span>
+                            <span class="metric-value">2026-04-01 15:29:11</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Shed — offline -->
+                <div class="node-card">
+                    <div class="node-header">
+                        <span class="node-name">Shed</span>
+                        <span class="badge offline">Offline</span>
+                    </div>
+                    <div class="node-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Hops</span>
+                            <span class="metric-value na">—</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">SNR</span>
+                            <span class="metric-value na">—</span>
+                        </div>
+                        <div class="metric" style="grid-column:1/-1">
+                            <span class="metric-label">Last Seen</span>
+                            <span class="metric-value">2026-04-01 09:14:45</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Repeater1 — online -->
+                <div class="node-card">
+                    <div class="node-header">
+                        <span class="node-name">Repeater1</span>
+                        <span class="badge online">Online</span>
+                    </div>
+                    <div class="node-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Hops</span>
+                            <span class="metric-value">1</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">SNR</span>
+                            <span class="metric-value">
+                                <div class="signal-wrap">
+                                    <div class="signal-bars">
+                                        <div class="bar active excellent" style="height:4px"></div>
+                                        <div class="bar active excellent" style="height:7px"></div>
+                                        <div class="bar active excellent" style="height:10px"></div>
+                                        <div class="bar active excellent" style="height:14px"></div>
+                                    </div>
+                                    <span>11.3 dB</span>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="metric" style="grid-column:1/-1">
+                            <span class="metric-label">Last Seen</span>
+                            <span class="metric-value">2026-04-01 15:41:55</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BackField — online, 3 hops away -->
+                <div class="node-card">
+                    <div class="node-header">
+                        <span class="node-name">BackField</span>
+                        <span class="badge online">Online</span>
+                    </div>
+                    <div class="node-metrics">
+                        <div class="metric">
+                            <span class="metric-label">Hops</span>
+                            <span class="metric-value">3</span>
+                        </div>
+                        <div class="metric">
+                            <span class="metric-label">SNR</span>
+                            <span class="metric-value">
+                                <div class="signal-wrap">
+                                    <div class="signal-bars">
+                                        <div class="bar active good" style="height:4px"></div>
+                                        <div class="bar active good" style="height:7px"></div>
+                                        <div class="bar" style="height:10px"></div>
+                                        <div class="bar" style="height:14px"></div>
+                                    </div>
+                                    <span>2.1 dB</span>
+                                </div>
+                            </span>
+                        </div>
+                        <div class="metric" style="grid-column:1/-1">
+                            <span class="metric-label">Last Seen</span>
+                            <span class="metric-value">2026-04-01 15:22:39</span>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+    </div><!-- #main-layout -->
+
+    <!-- ── Node map ───────────────────────────────────────────── -->
+    <div id="map-section">
+        <div id="map-toggle" onclick="document.getElementById('map-body').classList.toggle('open');document.getElementById('map-arrow').classList.toggle('open');setTimeout(function(){if(window._demoMap)window._demoMap.invalidateSize()},350)">
+            <h2 class="section-title">🗺️ Node Map</h2>
+            <span class="toggle-arrow open" id="map-arrow">▶</span>
+        </div>
+        <div id="map-body" class="open">
+            <div id="map-container"></div>
+        </div>
+    </div>
+
+    <!-- ── Message inbox ──────────────────────────────────────── -->
+    <div id="inbox-history-section">
+        <div class="inbox-section-header">
+            <h2>📨 Message Inbox</h2>
+            <a id="inbox-log-link" href="#">📋 View full log</a>
+        </div>
+
+        <!-- filter chips -->
+        <div id="inbox-filters">
+            <div id="inbox-chips">
+                <button class="filter-btn active">All</button>
+                <button class="filter-btn">Public</button>
+                <button class="filter-btn">Private</button>
+            </div>
+            <input id="inbox-search" type="search" placeholder="Search sender / text…">
+        </div>
+
+        <!-- compose bar -->
+        <div id="compose-bar">
+            <select id="compose-target">
+                <optgroup label="Channels">
+                    <option value="#0">Public</option>
+                </optgroup>
+                <optgroup label="Direct">
+                    <option value="Garden">➤ Garden</option>
+                    <option value="Garage">➤ Garage</option>
+                    <option value="Shed">➤ Shed</option>
+                    <option value="Repeater1">➤ Repeater1</option>
+                    <option value="BackField">➤ BackField</option>
+                </optgroup>
+            </select>
+            <input id="compose-input" type="text" placeholder="Type a message…" maxlength="200">
+            <div style="display:flex;align-items:center;gap:8px;margin-left:auto">
+                <button id="compose-send">Send ✈</button>
+                <span style="font-size:0.75rem;color:var(--muted)"></span>
+            </div>
+        </div>
+
+        <!-- messages -->
+        <div id="inbox-history">
+            <div class="inbox-msg">
+                <span class="msg-time">2026-04-01 15:38:22</span>
+                <span class="msg-chan">Public</span>
+                <span class="msg-sender">Garden</span>
+                <span class="msg-text">Temp 22.3°C, humidity 61%</span>
+            </div>
+            <div class="inbox-msg">
+                <span class="msg-time">2026-04-01 15:29:11</span>
+                <span class="msg-chan private">Private</span>
+                <span class="msg-sender">Garage</span>
+                <span class="msg-text">Motion detected at side entrance</span>
+            </div>
+            <div class="inbox-msg">
+                <span class="msg-time">2026-04-01 14:55:03</span>
+                <span class="msg-chan">Public</span>
+                <span class="msg-sender">BackField</span>
+                <span class="msg-text">All clear, gate is closed</span>
+            </div>
+            <div class="inbox-msg">
+                <span class="msg-time">2026-04-01 14:22:47</span>
+                <span class="msg-chan private">Private</span>
+                <span class="msg-sender">Garden</span>
+                <span class="msg-text">Battery still OK — 3.81V</span>
+            </div>
+            <div class="inbox-msg">
+                <span class="msg-time">2026-04-01 13:10:05</span>
+                <span class="msg-chan">Public</span>
+                <span class="msg-sender">Repeater1</span>
+                <span class="msg-text">Relay active, forwarding 3 nodes</span>
+            </div>
+            <div class="inbox-msg">
+                <span class="msg-time">2026-04-01 11:44:18</span>
+                <span class="msg-chan">Public</span>
+                <span class="msg-sender">Garage</span>
+                <span class="msg-text">Good morning — <span class="mention">@[HomeBase]</span> startup complete</span>
+            </div>
+        </div>
+    </div>
+
+</div><!-- #mc-wrap -->
+</div><!-- #dz-page -->
+
+<script>
+(function() {
+    // Demo node locations (fictional, near Amsterdam)
+    const nodes = [
+        { name: "HomeBase",   lat: 52.3676, lon: 4.9041, color: "#4e9af1", label: "Connected" },
+        { name: "Garden",     lat: 52.3690, lon: 4.9075, color: "#4caf7d", label: "Online" },
+        { name: "Garage",     lat: 52.3665, lon: 4.9010, color: "#4caf7d", label: "Online" },
+        { name: "Shed",       lat: 52.3650, lon: 4.9090, color: "#e05555", label: "Offline" },
+        { name: "Repeater1",  lat: 52.3700, lon: 4.9000, color: "#4caf7d", label: "Online" },
+        { name: "BackField",  lat: 52.3720, lon: 4.9120, color: "#4caf7d", label: "Online" },
+    ];
+
+    const map = L.map("map-container", { zoomControl: true, attributionControl: true });
+    window._demoMap = map;
+    L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a> &copy; <a href="https://carto.com/">CARTO</a>',
+        subdomains: "abcd",
+        maxZoom: 19,
+    }).addTo(map);
+
+    const bounds = [];
+    for (const n of nodes) {
+        const icon = L.divIcon({
+            className: "",
+            html: `<div style="
+                width:14px;height:14px;border-radius:50%;
+                background:${n.color};border:2px solid #fff;
+                box-shadow:0 0 6px ${n.color}88;
+            "></div>`,
+            iconSize: [14, 14],
+            iconAnchor: [7, 7],
+        });
+        L.marker([n.lat, n.lon], { icon })
+            .bindPopup(`<b>${n.name}</b><br>${n.label}<br><small>${n.lat.toFixed(5)}, ${n.lon.toFixed(5)}</small>`)
+            .addTo(map);
+        bounds.push([n.lat, n.lon]);
+    }
+    map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
+})();
+</script>
+
+</body>
+</html>

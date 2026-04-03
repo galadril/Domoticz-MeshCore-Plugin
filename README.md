@@ -3,7 +3,7 @@
 ![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)  
 🔗 _MeshCore LoRa Mesh integration for Domoticz Home Automation_
 
-This plugin connects your **MeshCore LoRa mesh nodes** to [Domoticz](https://www.domoticz.com/), exposing node telemetry, message inbox, and send controls as native Domoticz devices — ready for automations, dashboards and scripting.
+This plugin connects your **[MeshCore LoRa mesh nodes](https://meshcore.co.uk/)** to [Domoticz](https://www.domoticz.com/), exposing node telemetry, message inbox, and send controls as native Domoticz devices — ready for automations, dashboards and scripting.
 
 > 📻 Track battery, signal quality and uptime of your connected node · 📨 Send & receive LoRa messages · 🖥️ Custom real-time dashboard included!
 
@@ -44,11 +44,11 @@ This plugin connects your **MeshCore LoRa mesh nodes** to [Domoticz](https://www
 ### Prerequisites
 
 - Domoticz installed and running
-- A MeshCore node reachable over TCP (companion app or radio bridge)
+- A [MeshCore](https://meshcore.co.uk/) node reachable over TCP (companion app or radio bridge)
 - Python package:
 
 ```sh
-pip install meshcore
+pip install -r requirements.txt
 ```
 
 ### Setup

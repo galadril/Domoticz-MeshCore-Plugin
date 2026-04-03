@@ -2,7 +2,7 @@
 <plugin key="MeshCore" name="MeshCore" author="galadril" version="0.0.1" wikilink="" externallink="https://github.com/galadril/Domoticz-MeshCore-Plugin">
     <description>
         MeshCore LoRa mesh integration for Domoticz.
-        Requires: pip install meshcore
+        Requires: pip install -r requirements.txt
     </description>
     <params>
         <param field="Address"  label="MeshCore Host"               width="200px" required="true" default="192.168.1.50"/>

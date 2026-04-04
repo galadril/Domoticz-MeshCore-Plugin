@@ -594,20 +594,49 @@ class BasePlugin:
             self._conn_lock.release()
             Domoticz.Log("SendWorker: done.")
 
-    async def _send_cycle(self, text: str, loop):
-        """Connect, send one message, disconnect.  Stores mc on self._current_mc."""
+    async def _connect_with_retry(self, label: str, max_attempts: int = 3):
+        """Connect to the device with retries on appstart failure.
+
+        On each failed attempt, kills the socket, waits briefly, and retries
+        with a fresh TCPConnection + MeshCore instance.
+        Returns the connected mc instance or raises ConnectionError.
+        """
         from meshcore.tcp_cx import TCPConnection
 
-        Domoticz.Log(f"SendCycle: connecting to {self.host}:{self.port}…")
-        connection = TCPConnection(self.host, self.port)
-        mc = MeshCore(connection)
-        self._current_mc = mc
+        last_err = None
+        for attempt in range(1, max_attempts + 1):
+            Domoticz.Log(f"{label}: connect attempt {attempt}/{max_attempts}…")
 
-        Domoticz.Log("SendCycle: calling mc.connect()…")
-        res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
-        if res is None:
-            raise ConnectionError("Device did not respond to appstart.")
-        Domoticz.Log("SendCycle: connected.")
+            connection = TCPConnection(self.host, self.port)
+            mc = MeshCore(connection)
+            self._current_mc = mc
+
+            try:
+                res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
+            except Exception as exc:
+                Domoticz.Log(f"{label}: connect exception on attempt {attempt}: {exc}")
+                self._force_kill_socket(mc)
+                last_err = exc
+                if attempt < max_attempts:
+                    await asyncio.sleep(2)
+                continue
+
+            if res is not None:
+                Domoticz.Log(f"{label}: connected on attempt {attempt}.")
+                return mc
+
+            # appstart returned None — device not ready
+            Domoticz.Log(f"{label}: appstart failed on attempt {attempt}, retrying…")
+            self._force_kill_socket(mc)
+            last_err = ConnectionError("Device did not respond to appstart.")
+            if attempt < max_attempts:
+                await asyncio.sleep(2)
+
+        raise last_err or ConnectionError("Failed to connect after retries.")
+
+    async def _send_cycle(self, text: str, loop):
+        """Connect, send one message, disconnect.  Stores mc on self._current_mc."""
+        mc = await self._connect_with_retry("SendCycle")
 
         # We need contacts loaded for name → contact lookup
         if not mc.contacts:
@@ -622,19 +651,9 @@ class BasePlugin:
 
     async def _poll_cycle(self, loop):
         """Connect, do all work.  Stores mc on self._current_mc for cleanup."""
-        from meshcore.tcp_cx import TCPConnection
+        mc = await self._connect_with_retry("Poll")
 
-        Domoticz.Log(f"Poll: connecting to {self.host}:{self.port}…")
-
-        connection = TCPConnection(self.host, self.port)
-        mc = MeshCore(connection)
-        self._current_mc = mc
-
-        Domoticz.Log("Poll: calling mc.connect()…")
-        res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
-        if res is None:
-            raise ConnectionError("Device did not respond to appstart.")
-        Domoticz.Log(f"Poll: connected. self_info={mc.self_info}")
+        Domoticz.Log(f"Poll: connected. self_info keys={list(mc.self_info.keys()) if mc.self_info else 'None'}")
         if mc.self_info:
             name = mc.self_info.get("name", "")
             if name:

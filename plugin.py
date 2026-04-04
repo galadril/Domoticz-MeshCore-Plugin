@@ -79,12 +79,17 @@ BAT_VMAX_MV = 4200
 # Node is considered online if last_advert is newer than this (8 h)
 ONLINE_THRESHOLD_S = 28800
 
-# Poll intervals (seconds)
-MSG_POLL_INTERVAL      = 30    # how often to drain message queue and refresh contacts
-SELF_STATS_INTERVAL    = 300   # 5 min — poll connected node stats
-CONNECTION_STALE_S     = 600   # 10 min — force reconnect if no push events received
-LIVENESS_INTERVAL      = 300   # 5 min — send a full contacts refresh to verify the link
-SESSION_MAX_S          = 1800  # 30 min — proactive reconnect to prevent ESP32 TCP stack exhaustion
+# How many heartbeats between self-node stats polls (heartbeat=30s, so 10 = ~5 min)
+SELF_STATS_HEARTBEATS = 10
+
+# Connection timeout for each short-lived TCP session (seconds)
+CONNECT_TIMEOUT    = 15
+COMMAND_TIMEOUT    = 10
+
+# Backoff on consecutive connection failures
+BACKOFF_BASE_S     = 30     # first extra delay on failure (added on top of the heartbeat interval)
+BACKOFF_MAX_S      = 300    # 5 min max extra delay
+BACKOFF_FACTOR     = 2.0
 
 
 def _bat_pct(mv: int) -> int:
@@ -94,31 +99,34 @@ def _bat_pct(mv: int) -> int:
 class BasePlugin:
 
     def __init__(self):
-        self._queue          = queue.Queue()
-        self._worker         = None
-        self._loop           = None
-        self._main_task      = None
-        self._stop           = threading.Event()
+        self._queue          = queue.Queue()  # worker → main thread
         self.host            = ""
         self.port            = 5000
         self._contact_names  = []   # contact names discovered from mc.contacts (non-self)
         self.initialized     = False
-        self._mc             = None
         self._self_name      = ""   # name of the connected node
         # pubkey_prefix (12 hex chars) → adv_name, rebuilt from contacts
         self._prefix_to_name = {}
         # node_name → last Unix timestamp we saw ANY activity from it
-        # (message, advertisement push, status response); used as fallback
-        # when last_advert is 0 or missing (common for repeater-type nodes)
         self._node_last_activity: dict = {}
         # node_name → {"lat": float, "lon": float} from contact adv_lat/adv_lon
         self._node_locations: dict = {}
         # Last sValue we already dispatched — prevents re-sending on every heartbeat
         self._last_sent_text = ""
-        self._last_push_event = 0.0  # monotonic timestamp of last push event received
         # Message counters (reset when Domoticz restarts the plugin)
         self._recv_count = 0
         self._sent_count = 0
+        # Heartbeat counter for periodic self-stats poll
+        self._hb_count = 0
+        # Pending outgoing messages queued from onDeviceModified
+        self._pending_sends: list = []
+        # Backoff state for consecutive connection failures
+        self._consec_failures = 0
+        self._skip_until = 0.0  # monotonic time: skip heartbeats until this
+        # Channel names already fetched flag (only need once)
+        self._channels_fetched = False
+        # Lock to prevent overlapping heartbeat polls
+        self._poll_lock = threading.Lock()
 
     def _node_index(self, node_name: str) -> int:
         """Return slot index: 0 = self node, 1..N = contacts."""
@@ -139,22 +147,23 @@ class BasePlugin:
         names.extend(self._contact_names)
         return names
 
-    def _force_close_connection(self, mc):
-        """Forcefully close the raw TCP transport/socket of a MeshCore instance.
-
-        This ensures the OS-level socket is torn down immediately so the
-        remote device releases the connection and will accept a new one.
-        """
+    def _safe_disconnect(self, mc, loop):
+        """Cleanly disconnect, then forcefully tear down the socket as a safety net."""
         if mc is None:
             return
+        # 1. Ask the library to disconnect gracefully
+        try:
+            loop.run_until_complete(asyncio.wait_for(mc.disconnect(), timeout=3.0))
+        except Exception:
+            pass
+        # 2. Close the asyncio transport
         try:
             transport = mc.connection_manager.connection.transport
             if transport:
                 transport.close()
         except Exception:
             pass
-        # Also close the underlying socket directly in case transport.close()
-        # didn't fully release it (e.g. half-open / stuck state).
+        # 3. Forcefully close the OS socket as a last resort
         try:
             transport = mc.connection_manager.connection.transport
             if transport:
@@ -186,46 +195,41 @@ class BasePlugin:
             self._install_custom_page()
             self._install_manual_locations()
 
-        self._stop.clear()
-        self._worker = threading.Thread(target=self._worker_loop, daemon=True, name="MeshCoreWorker")
-        self._worker.start()
-
         self.initialized = True
-        Domoticz.Heartbeat(10)
+        Domoticz.Heartbeat(30)
         Domoticz.Log(f"MeshCore plugin started – {self.host}:{self.port}")
 
     def onStop(self):
-        self._stop.set()
-
-        # Close the raw TCP socket so any blocking network await unblocks immediately.
-        mc = self._mc
-        self._force_close_connection(mc)
-        self._mc = None
-
-        loop = self._loop
-        if loop and not loop.is_closed():
-            def _force_stop():
-                for t in asyncio.all_tasks(loop):
-                    if not t.done():
-                        t.cancel()
-                loop.stop()
-            loop.call_soon_threadsafe(_force_stop)
-
-        if self._worker and self._worker.is_alive():
-            self._worker.join(timeout=5)
-
         self._remove_custom_page()
         Domoticz.Log("MeshCore plugin stopped.")
 
     def onHeartbeat(self):
         if not self.initialized:
             return
+
+        # Drain results from the worker thread (device updates, logging)
         while True:
             try:
                 item = self._queue.get_nowait()
             except queue.Empty:
                 break
             self._dispatch(item)
+
+        # Backoff: skip this heartbeat if we are in a cooldown period
+        now = time.monotonic()
+        if now < self._skip_until:
+            remaining = int(self._skip_until - now)
+            Domoticz.Debug(f"Backoff active — skipping heartbeat ({remaining}s remaining)")
+            return
+
+        # Prevent overlapping polls (previous heartbeat's thread still running)
+        if not self._poll_lock.acquire(blocking=False):
+            Domoticz.Debug("Previous poll still running — skipping heartbeat")
+            return
+
+        self._hb_count += 1
+        t = threading.Thread(target=self._heartbeat_worker, daemon=True, name="MeshCorePoll")
+        t.start()
 
     def onDeviceModified(self, unit: int):
         if unit != UNIT_SEND:
@@ -239,12 +243,8 @@ class BasePlugin:
         if text == self._last_sent_text:
             return
         self._last_sent_text = text
-        mc = self._mc
-        if mc is None:
-            Domoticz.Error("Cannot send — not connected to MeshCore.")
-            return
-        # Schedule the send on the worker event loop (non-blocking from main thread)
-        asyncio.run_coroutine_threadsafe(self._send_message(mc, text), self._loop)
+        self._pending_sends.append(text)
+        Domoticz.Log(f"Message queued for next heartbeat: {text}")
 
     # ── Device creation ───────────────────────────────────────────────────────
 
@@ -458,288 +458,124 @@ class BasePlugin:
             Domoticz.Error(f"Failed to remove {fname}: {exc}")
         Domoticz.Log("MeshCore dashboard removed.")
 
-    # ── Async worker ──────────────────────────────────────────────────────────
+    # ── Heartbeat-driven poll worker ─────────────────────────────────────────
 
-    def _apply_keepalive(self, mc):
-        """Enable TCP keepalive on the underlying socket to prevent NAT table expiry."""
-        import socket as _socket
-        try:
-            transport = mc.connection_manager.connection.transport
-            if not transport:
-                return
-            sock = transport.get_extra_info("socket")
-            if not sock:
-                return
-            sock.setsockopt(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)
-            # On Linux/Windows: first keepalive probe after 60 s idle,
-            # then every 10 s, fail after 3 missed probes.
-            if hasattr(_socket, "TCP_KEEPIDLE"):
-                sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 60)
-            if hasattr(_socket, "TCP_KEEPINTVL"):
-                sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10)
-            if hasattr(_socket, "TCP_KEEPCNT"):
-                sock.setsockopt(_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3)
-            Domoticz.Log("TCP keepalive enabled on MeshCore socket.")
-        except Exception as exc:
-            Domoticz.Debug(f"Could not set TCP keepalive: {exc}")
+    def _heartbeat_worker(self):
+        """Run a short-lived connect→poll→disconnect cycle in a background thread.
 
-    def _worker_loop(self):
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        Called from onHeartbeat.  The _poll_lock is held for the duration so
+        overlapping heartbeats are skipped.
+        """
+        loop = asyncio.new_event_loop()
+        mc = None
         try:
-            self._main_task = self._loop.create_task(self._async_worker())
-            self._loop.run_forever()
+            mc = loop.run_until_complete(self._poll_cycle(loop))
         except Exception as exc:
-            Domoticz.Error(f"Worker loop error: {exc}")
+            Domoticz.Error(f"MeshCore poll error: {exc}\n{traceback.format_exc()}")
+            self._consec_failures += 1
+            delay = min(BACKOFF_BASE_S * (BACKOFF_FACTOR ** self._consec_failures), BACKOFF_MAX_S)
+            if delay > 0:
+                self._skip_until = time.monotonic() + delay
+                Domoticz.Log(f"Backing off — next poll in {int(delay)}s (failure #{self._consec_failures})")
         finally:
+            if mc is not None:
+                self._safe_disconnect(mc, loop)
             try:
-                self._loop.close()
+                loop.run_until_complete(loop.shutdown_asyncgens())
             except Exception:
                 pass
+            loop.close()
+            self._poll_lock.release()
 
-    async def _stop_aware_sleep(self, seconds: float):
-        deadline = time.monotonic() + seconds
-        while not self._stop.is_set():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+    async def _poll_cycle(self, loop):
+        """Connect, do all work, disconnect.  Returns the mc instance for cleanup."""
+        Domoticz.Debug(f"Connecting to {self.host}:{self.port}…")
+        mc = await asyncio.wait_for(
+            MeshCore.create_tcp(self.host, self.port), timeout=CONNECT_TIMEOUT
+        )
+        if mc is None:
+            raise ConnectionError("create_tcp returned None — device did not respond to appstart.")
+
+        Domoticz.Debug(f"Connected. self_info={mc.self_info}")
+        if mc.self_info:
+            name = mc.self_info.get("name", "")
+            if name:
+                self._self_name = name
+            self._queue.put(("self_info", dict(mc.self_info)))
+
+        # ── Fetch contacts ────────────────────────────────────────────────
+        for attempt in range(5):
+            try:
+                await asyncio.wait_for(mc.commands.get_contacts(), timeout=COMMAND_TIMEOUT)
+            except asyncio.TimeoutError:
+                Domoticz.Debug(f"get_contacts timed out (attempt {attempt + 1})")
+            except Exception as exc:
+                Domoticz.Debug(f"get_contacts error (attempt {attempt + 1}): {exc}")
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            if mc.contacts:
                 break
-            try:
-                await asyncio.sleep(min(remaining, 1.0))
-            except asyncio.CancelledError:
-                raise
+            await asyncio.sleep(1)
 
-    async def _async_worker(self):
-        try:
-            while not self._stop.is_set():
-                mc = None
-                try:
-                    Domoticz.Log(f"Connecting to {self.host}:{self.port}…")
-                    mc = await asyncio.wait_for(
-                        MeshCore.create_tcp(self.host, self.port), timeout=15.0
-                    )
-                    if mc is None:
-                        Domoticz.Error("create_tcp returned None — device did not respond to appstart.")
-                        self._mc = None
-                    else:
-                        self._mc = mc
-                        self._apply_keepalive(mc)
-                        await asyncio.sleep(0)
-                        await asyncio.sleep(0)
-                        Domoticz.Log(f"Connected. self_info={mc.self_info}")
-                        if mc.self_info:
-                            self._self_name = mc.self_info.get("name", "")
-                            self._queue.put(("self_info", dict(mc.self_info)))
-                        await self._run_session(mc)
-                except asyncio.CancelledError:
-                    return
-                except asyncio.TimeoutError:
-                    Domoticz.Error(f"Connection to {self.host}:{self.port} timed out after 15s.")
-                except Exception as exc:
-                    Domoticz.Error(f"MeshCore worker error: {exc}\n{traceback.format_exc()}")
-                finally:
-                    # Forcefully tear down the old connection before reconnecting.
-                    # This ensures the OS socket is released and the remote device
-                    # will accept a new connection on the next attempt.
-                    if mc is not None:
-                        self._force_close_connection(mc)
-                    self._mc = None
+        if mc.contacts:
+            contacts_snapshot = {k: dict(v) for k, v in mc.contacts.items()}
+            self._queue.put(("contacts", contacts_snapshot))
+        else:
+            Domoticz.Error("No contacts returned from device.")
 
-                if self._stop.is_set():
-                    return
-                Domoticz.Log("Reconnecting in 10s…")
-                try:
-                    await self._stop_aware_sleep(10)
-                except asyncio.CancelledError:
-                    return
-        finally:
-            self._mc = None
-
-    async def _run_session(self, mc):
-        try:
-            Domoticz.Log("Session started — fetching contacts…")
-            for attempt in range(15):
-                if self._stop.is_set():
-                    return
-                try:
-                    await asyncio.wait_for(mc.commands.get_contacts(), timeout=10.0)
-                    Domoticz.Log("get_contacts succeeded.")
-                except asyncio.TimeoutError:
-                    Domoticz.Log("get_contacts timed out.")
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    Domoticz.Error(f"get_contacts error: {exc}")
-                await asyncio.sleep(0)
-                await asyncio.sleep(0)
-                if mc.contacts:
-                    names = [c.get("adv_name", "?") for c in mc.contacts.values()]
-                    Domoticz.Log(f"Contacts loaded ({len(mc.contacts)}): {names}")
-                    break
-                Domoticz.Log(f"mc.contacts still empty after attempt {attempt + 1}, retrying…")
-                await asyncio.sleep(1)
-
-            if not mc.contacts:
-                Domoticz.Error("No contacts after 15 attempts — check device and node names.")
-                return
-
-            # Log contact details
-            for key, c in mc.contacts.items():
-                age = int(time.time()) - c.get("last_advert", 0)
-                Domoticz.Log(
-                    f"  Contact: '{c.get('adv_name')}' type={c.get('type')} "
-                    f"path_len={c.get('out_path_len')} advert={age}s ago"
-                )
-
-            # Subscribe to incoming messages (push events) FIRST so we don't
-            # miss anything while doing channel fetch / login below.
-            # NOTE: These callbacks run on the async worker thread.
-            # Do NOT call Domoticz.Log/Debug here — those are not thread-safe and
-            # will leave Python in a bad error state, causing Domoticz to crash via
-            # HasNodeFailed() → PyErr_Occurred() on the web-server thread.
-            # All logging must be deferred to the main thread via the queue.
-            def _on_contact_msg(event):
-                try:
-                    self._last_push_event = time.monotonic()
-                    self._queue.put(("message", event.payload))
-                except Exception:
-                    pass
-
-            def _on_channel_msg(event):
-                try:
-                    self._last_push_event = time.monotonic()
-                    self._queue.put(("message", event.payload))
-                except Exception:
-                    pass
-
-            def _on_advertisement(event):
-                try:
-                    self._last_push_event = time.monotonic()
-                    self._queue.put(("advertisement", event.payload))
-                except Exception:
-                    pass
-
-            def _on_new_contact(event):
-                try:
-                    self._last_push_event = time.monotonic()
-                    self._queue.put(("new_contact", event.payload))
-                except Exception:
-                    pass
-
-            def _on_status_response(event):
-                # Handles STATUS_RESPONSE push events (spontaneous or from req_status_sync).
-                # Take a local snapshot of _prefix_to_name to avoid a race with the
-                # main thread updating it in _handle_contacts.
-                try:
-                    self._last_push_event = time.monotonic()
-                    prefix_map = dict(self._prefix_to_name)
-                    prefix = event.payload.get("pubkey_pre", "")
-                    name   = prefix_map.get(prefix, "")
-                    if name:
-                        self._queue.put(("contact_status", {"name": name, "data": event.payload}))
-                except Exception:
-                    pass
-
-            mc.subscribe(EventType.CONTACT_MSG_RECV,  _on_contact_msg)
-            mc.subscribe(EventType.CHANNEL_MSG_RECV,  _on_channel_msg)
-            mc.subscribe(EventType.ADVERTISEMENT,     _on_advertisement)
-            mc.subscribe(EventType.NEW_CONTACT,       _on_new_contact)
-            mc.subscribe(EventType.STATUS_RESPONSE,   _on_status_response)
-
-            # Fetch channel names (local command, no over-the-air wait)
+        # ── Fetch channel names (once) ────────────────────────────────────
+        if not self._channels_fetched:
             await self._fetch_channel_names(mc)
+            self._channels_fetched = True
 
-            t_self_stats         = -(SELF_STATS_INTERVAL + 1)   # force immediate poll
-            t_liveness           = time.monotonic()
-            t_session_start      = time.monotonic()
-            consecutive_failures = 0
-            self._last_push_event = time.monotonic()  # reset on fresh session
+        # ── Collect incoming messages (drain push events that arrived during connection)
+        await self._drain_push_events(mc)
 
-            while not self._stop.is_set():
-                now = time.monotonic()
+        # ── Send pending messages ─────────────────────────────────────────
+        sends = list(self._pending_sends)
+        self._pending_sends.clear()
+        for text in sends:
+            await self._send_message(mc, text)
 
-                # ── Proactive reconnect: ESP32 TCP stacks can't hold a connection
-                #    open indefinitely; cycling every 30 min keeps the device stable.
-                if now - t_session_start >= SESSION_MAX_S:
-                    Domoticz.Log(
-                        f"Session reached {SESSION_MAX_S}s — proactive reconnect to keep device healthy."
-                    )
-                    return
+        # ── Poll self-node stats periodically ─────────────────────────────
+        if self._hb_count % SELF_STATS_HEARTBEATS == 0:
+            await self._poll_self_stats(mc)
 
-                # ── Staleness check: if no push events for CONNECTION_STALE_S
-                #    and at least one contact is supposedly online, the link is
-                #    likely dead even though the socket hasn't errored out.
-                since_last_push = now - self._last_push_event
-                if since_last_push >= CONNECTION_STALE_S:
-                    Domoticz.Error(
-                        f"No push events received for {int(since_last_push)}s "
-                        f"— connection appears stale, reconnecting…"
-                    )
-                    return
+        # Connection succeeded — reset backoff
+        self._consec_failures = 0
+        self._skip_until = 0.0
 
-                # ── Refresh contacts list (incremental)
-                try:
-                    await asyncio.wait_for(
-                        mc.commands.get_contacts(lastmod=mc._lastmod), timeout=10.0
-                    )
-                    await asyncio.sleep(0)
-                    await asyncio.sleep(0)
-                    consecutive_failures = 0
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    consecutive_failures += 1
-                    Domoticz.Error(f"contacts refresh error ({consecutive_failures}/3): {exc}")
-                    if consecutive_failures >= 3:
-                        Domoticz.Error("Connection appears dead — reconnecting…")
-                        return
+        Domoticz.Debug("Poll cycle complete — disconnecting.")
+        return mc
 
-                # ── Periodic liveness probe: do a full (non-incremental) contacts
-                #    fetch to force a real round-trip over the wire.
-                if now - t_liveness >= LIVENESS_INTERVAL:
-                    t_liveness = now
-                    try:
-                        await asyncio.wait_for(
-                            mc.commands.get_contacts(), timeout=10.0
-                        )
-                        await asyncio.sleep(0)
-                        await asyncio.sleep(0)
-                        Domoticz.Debug("Liveness probe OK.")
-                    except asyncio.CancelledError:
-                        raise
-                    except Exception as exc:
-                        Domoticz.Error(f"Liveness probe failed: {exc} — reconnecting…")
-                        return
+    async def _drain_push_events(self, mc):
+        """Drain all pending messages from the device using get_msg().
 
-                # Push contacts snapshot to main thread
-                try:
-                    contacts_snapshot = {k: dict(v) for k, v in mc.contacts.items()}
-                except (TypeError, ValueError):
-                    contacts_snapshot = {}
-                if contacts_snapshot:
-                    self._queue.put(("contacts", contacts_snapshot))
-
-                # Poll self-node stats every SELF_STATS_INTERVAL
-                if now - t_self_stats >= SELF_STATS_INTERVAL:
-                    t_self_stats = now
-                    await self._poll_self_stats(mc)
-
-                try:
-                    await self._stop_aware_sleep(MSG_POLL_INTERVAL)
-                except asyncio.CancelledError:
-                    return
-        finally:
+        The device queues incoming messages; we pull them one by one until
+        NO_MORE_MSGS is returned.
+        """
+        fetched = 0
+        for _ in range(50):  # safety limit
             try:
-                await asyncio.wait_for(mc.disconnect(), timeout=3.0)
-            except Exception:
-                pass
-            # Forcefully tear down the TCP socket regardless of whether
-            # disconnect() succeeded — this prevents half-open sockets
-            # from blocking future reconnection attempts.
-            self._force_close_connection(mc)
+                r = await asyncio.wait_for(mc.commands.get_msg(), timeout=5.0)
+            except asyncio.TimeoutError:
+                break
+            except Exception as exc:
+                Domoticz.Debug(f"get_msg error: {exc}")
+                break
+            if r is None or r.type == EventType.NO_MORE_MSGS:
+                break
+            if r.type in (EventType.CONTACT_MSG_RECV, EventType.CHANNEL_MSG_RECV):
+                self._queue.put(("message", r.payload))
+                fetched += 1
+            elif r.type == EventType.ERROR:
+                break
+        if fetched:
+            Domoticz.Log(f"Fetched {fetched} pending message(s) from device.")
 
     async def _poll_self_stats(self, mc):
         """Poll all available stats from the connected node itself."""
-        Domoticz.Log("Polling self-node stats…")
+        Domoticz.Debug("Polling self-node stats…")
 
         stats = {}
 
@@ -747,9 +583,7 @@ class BasePlugin:
             r = await asyncio.wait_for(mc.commands.get_stats_core(), timeout=5.0)
             if r and r.type == EventType.STATS_CORE:
                 stats.update(r.payload)
-                Domoticz.Log(f"stats_core: {r.payload}")
-        except asyncio.CancelledError:
-            raise
+                Domoticz.Debug(f"stats_core: {r.payload}")
         except Exception as exc:
             Domoticz.Debug(f"get_stats_core error: {exc}")
 
@@ -757,9 +591,7 @@ class BasePlugin:
             r = await asyncio.wait_for(mc.commands.get_stats_radio(), timeout=5.0)
             if r and r.type == EventType.STATS_RADIO:
                 stats.update(r.payload)
-                Domoticz.Log(f"stats_radio: {r.payload}")
-        except asyncio.CancelledError:
-            raise
+                Domoticz.Debug(f"stats_radio: {r.payload}")
         except Exception as exc:
             Domoticz.Debug(f"get_stats_radio error: {exc}")
 
@@ -767,9 +599,7 @@ class BasePlugin:
             r = await asyncio.wait_for(mc.commands.get_stats_packets(), timeout=5.0)
             if r and r.type == EventType.STATS_PACKETS:
                 stats.update(r.payload)
-                Domoticz.Log(f"stats_packets: {r.payload}")
-        except asyncio.CancelledError:
-            raise
+                Domoticz.Debug(f"stats_packets: {r.payload}")
         except Exception as exc:
             Domoticz.Debug(f"get_stats_packets error: {exc}")
 
@@ -782,23 +612,18 @@ class BasePlugin:
         for idx in range(8):
             try:
                 res = await asyncio.wait_for(mc.commands.get_channel(idx), timeout=5.0)
-                Domoticz.Log(f"get_channel({idx}): type={res.type if res else None} payload={res.payload if res else None}")
+                Domoticz.Debug(f"get_channel({idx}): type={res.type if res else None} payload={res.payload if res else None}")
                 if res and res.type == EventType.CHANNEL_INFO:
                     name = res.payload.get("channel_name", "").strip("\x00").strip()
                     if name:
                         channel_names[str(idx)] = name
                 elif res and res.type == EventType.ERROR:
-                    Domoticz.Log(f"get_channel({idx}) error: {res.payload}")
                     break
             except asyncio.TimeoutError:
-                Domoticz.Log(f"get_channel({idx}) timed out")
                 break
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                Domoticz.Log(f"get_channel({idx}) exception: {exc}")
+            except Exception:
                 break
-        Domoticz.Log(f"Channel names fetched: {channel_names}")
+        Domoticz.Debug(f"Channel names fetched: {channel_names}")
         if channel_names:
             self._write_channel_names(channel_names)
 
@@ -832,7 +657,7 @@ class BasePlugin:
                     )
                     ok = result is not None and result.type == EventType.OK
                     self._queue.put(("send_result", {"ok": ok, "target": f"#{chan_idx}", "body": body,
-                                                     "result": "TX busy — try again" if tx_busy else str(result)}))
+                                                    "result": "TX busy — try again" if tx_busy else str(result)}))
                 except Exception as exc:
                     self._queue.put(("send_result", {"ok": False, "target": f"#{chan_idx}", "body": body, "result": str(exc)}))
                 return
@@ -882,14 +707,6 @@ class BasePlugin:
             self._handle_contacts(item[1])
         elif kind == "self_stats":
             self._handle_self_stats(item[1])
-        elif kind == "contact_status":
-            self._handle_contact_status(item[1])
-        elif kind == "advertisement":
-            Domoticz.Debug(f"ADVERTISEMENT: {item[1]}")
-            self._handle_advertisement(item[1])
-        elif kind == "new_contact":
-            Domoticz.Debug(f"NEW_CONTACT: {item[1]}")
-            self._handle_advertisement(item[1])
         elif kind == "self_info":
             name = item[1].get("name", "")
             Domoticz.Log(f"Self info: name={name}, freq={item[1].get('radio_freq')} MHz")
@@ -988,123 +805,6 @@ class BasePlugin:
                 f"online={online} (advert={advert_online} path={path_online})"
             )
 
-        self._write_device_map()
-
-    def _handle_advertisement(self, payload: dict):
-        """Handle ADVERTISEMENT / NEW_CONTACT push — update last-seen for any contact.
-
-        Push ADVERTISEMENT events only carry public_key (no adv_name), so we
-        look the name up via _prefix_to_name.  NEW_CONTACT events carry the
-        full contact dict and do have adv_name.
-        """
-        adv_name = payload.get("adv_name", "").strip()
-        if not adv_name:
-            pk = payload.get("public_key", "")
-            adv_name = self._prefix_to_name.get(pk[:12], "")
-        if not adv_name or adv_name == self._self_name:
-            return
-
-        adv_ts = payload.get("adv_timestamp", 0) or payload.get("last_advert", 0)
-        if adv_ts < 1_577_836_800:
-            adv_ts = 0
-        if not adv_ts:
-            adv_ts = int(time.time())
-
-        # Only update stored contacts — don't auto-register new ones from advertisements
-        if adv_name not in self._contact_names:
-            return
-
-        self._ensure_node_devices(adv_name)
-        idx = self._node_index(adv_name)
-        if idx < 0:
-            return
-
-        self._node_last_activity[adv_name] = adv_ts
-        online = (int(time.time()) - adv_ts) < ONLINE_THRESHOLD_S
-
-        # Store GPS location from advertisement if available
-        adv_lat = payload.get("adv_lat", 0.0)
-        adv_lon = payload.get("adv_lon", 0.0)
-        if adv_lat and adv_lon and not (adv_lat == 0.0 and adv_lon == 0.0):
-            self._node_locations[adv_name] = {"lat": adv_lat, "lon": adv_lon}
-
-        status_unit = self._node_unit(idx, OFF_STATUS)
-        if status_unit in Devices:
-            Devices[status_unit].Update(
-                nValue=1 if online else 0,
-                sValue="On" if online else "Off"
-            )
-
-        ls_unit = self._node_unit(idx, OFF_LASTSEEN)
-        if ls_unit in Devices:
-            ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(adv_ts))
-            Devices[ls_unit].Update(nValue=0, sValue=ts)
-
-        Domoticz.Log(f"Advertisement from '{adv_name}': online={online}")
-
-    def _handle_contact_status(self, payload: dict):
-        """Update remote node devices from a STATUS_RESPONSE (binary status poll or push)."""
-        node_name = payload.get("name", "")
-        data      = payload.get("data", {})
-        if not node_name or not data:
-            return
-
-        self._ensure_node_devices(node_name)
-        idx = self._node_index(node_name)
-        if idx < 0:
-            return
-
-        def _upd(offset, value, fmt=str):
-            u = self._node_unit(idx, offset)
-            if u in Devices:
-                Devices[u].Update(nValue=0, sValue=fmt(value))
-
-        # Battery (mV)
-        bat_mv = data.get("bat", 0)
-        if bat_mv:
-            pct = _bat_pct(bat_mv)
-            u_pct = self._node_unit(idx, OFF_BATT_PCT)
-            u_v   = self._node_unit(idx, OFF_BATT_V)
-            if u_pct in Devices:
-                Devices[u_pct].Update(nValue=pct, sValue=str(pct))
-            if u_v in Devices:
-                Devices[u_v].Update(nValue=0, sValue=str(round(bat_mv / 1000, 2)))
-
-        # RSSI / SNR
-        rssi = data.get("last_rssi")
-        snr  = data.get("last_snr")
-        if rssi is not None: _upd(OFF_RSSI, rssi)
-        if snr  is not None: _upd(OFF_SNR,  round(float(snr), 2))
-
-        # Rich stats (only present when node supports binary protocol)
-        noise = data.get("noise_floor")
-        if noise is not None: _upd(OFF_NOISE, noise)
-
-        uptime = data.get("uptime")
-        if uptime: _upd(OFF_UPTIME, round(uptime / 60, 1))
-
-        airtime = data.get("airtime")
-        if airtime: _upd(OFF_AIRTIME, airtime)
-
-        nb_sent = data.get("nb_sent")
-        nb_recv = data.get("nb_recv")
-        if nb_sent is not None: _upd(OFF_MSGS_SENT, nb_sent)
-        if nb_recv is not None: _upd(OFF_MSGS_RECV, nb_recv)
-
-        # A response means the node is reachable → record activity and mark online
-        self._node_last_activity[node_name] = int(time.time())
-        u_status = self._node_unit(idx, OFF_STATUS)
-        if u_status in Devices:
-            Devices[u_status].Update(nValue=1, sValue="On")
-
-        # Last Seen = now
-        u_ls = self._node_unit(idx, OFF_LASTSEEN)
-        if u_ls in Devices:
-            Devices[u_ls].Update(nValue=0, sValue=time.strftime("%Y-%m-%d %H:%M:%S"))
-
-        Domoticz.Log(f"Contact status updated for '{node_name}': "
-                     f"bat={bat_mv}mV rssi={rssi} snr={snr} "
-                     f"noise={noise} uptime={uptime}s")
         self._write_device_map()
 
     def _handle_message(self, msg: dict):

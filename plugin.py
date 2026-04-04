@@ -150,11 +150,10 @@ class BasePlugin:
     def _safe_disconnect(self, mc, loop):
         """Aggressively tear down the TCP connection so the ESP32 releases it immediately.
 
-        The ESP32 only accepts one TCP connection at a time.  A graceful FIN
-        leaves the OS socket in TIME_WAIT for up to 60 s, during which the
-        device refuses new connections.  Setting SO_LINGER(0) causes the
-        kernel to send an RST instead, freeing the port instantly on both
-        sides.
+        The ESP32 only accepts one TCP connection at a time.  We must NOT call
+        mc.disconnect() because the library's dispatcher.stop() may hang on
+        queue.join() if events are stuck.  Instead, we kill the raw socket
+        directly with SO_LINGER(0) to send an RST.
         """
         if mc is None:
             return
@@ -163,6 +162,7 @@ class BasePlugin:
 
         # 1. Grab the raw OS socket BEFORE anything closes it
         raw_sock = None
+        transport = None
         try:
             transport = mc.connection_manager.connection.transport
             if transport:
@@ -180,28 +180,39 @@ class BasePlugin:
             except OSError:
                 pass
 
-        # 3. Ask the library to disconnect (stops dispatcher, sets flags)
-        try:
-            loop.run_until_complete(asyncio.wait_for(mc.disconnect(), timeout=3.0))
-        except Exception:
-            pass
-
-        # 4. Close the asyncio transport (triggers the RST thanks to SO_LINGER)
-        try:
-            transport = mc.connection_manager.connection.transport
-            if transport:
+        # 3. Kill the asyncio transport — sends RST thanks to SO_LINGER
+        if transport:
+            try:
                 transport.close()
-        except Exception:
-            pass
+            except Exception:
+                pass
 
-        # 5. Belt-and-suspenders: forcefully close the OS socket if still open
+        # 4. Forcefully close the OS socket as a last resort
         if raw_sock:
             try:
                 raw_sock.close()
             except OSError:
                 pass
 
-        # 6. Give the OS a moment to actually send the RST packet
+        # 5. Cancel the dispatcher task so the event loop can shut down
+        try:
+            if mc.dispatcher and mc.dispatcher._task and not mc.dispatcher._task.done():
+                mc.dispatcher.running = False
+                mc.dispatcher._task.cancel()
+        except Exception:
+            pass
+
+        # 6. Cancel any remaining tasks on the loop
+        try:
+            pending = asyncio.all_tasks(loop)
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+
+        # 7. Give the OS a moment to actually send the RST packet
         time.sleep(0.1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -529,16 +540,17 @@ class BasePlugin:
             return
 
         loop = asyncio.new_event_loop()
-        mc = None
+        self._current_mc = None
         try:
-            mc = loop.run_until_complete(self._send_cycle(text, loop))
+            loop.run_until_complete(self._send_cycle(text, loop))
         except Exception as exc:
             Domoticz.Error(f"Immediate send error: {exc}")
             self._queue.put(("send_result", {"ok": False, "target": "?",
                                              "body": text, "result": str(exc)}))
         finally:
-            if mc is not None:
-                self._safe_disconnect(mc, loop)
+            if self._current_mc is not None:
+                self._safe_disconnect(self._current_mc, loop)
+                self._current_mc = None
             try:
                 loop.run_until_complete(loop.shutdown_asyncgens())
             except Exception:
@@ -547,11 +559,12 @@ class BasePlugin:
             self._conn_lock.release()
 
     async def _send_cycle(self, text: str, loop):
-        """Connect, send one message, disconnect.  Returns mc for cleanup."""
+        """Connect, send one message, disconnect.  Stores mc on self._current_mc."""
         from meshcore.tcp_cx import TCPConnection
 
         connection = TCPConnection(self.host, self.port)
         mc = MeshCore(connection)
+        self._current_mc = mc
 
         res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
         if res is None:
@@ -564,7 +577,6 @@ class BasePlugin:
             await asyncio.sleep(0)
 
         await self._send_message(mc, text)
-        return mc
 
     async def _poll_cycle(self, loop):
         """Connect, do all work.  Stores mc on self._current_mc for cleanup."""

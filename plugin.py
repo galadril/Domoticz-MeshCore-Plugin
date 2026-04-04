@@ -118,15 +118,13 @@ class BasePlugin:
         self._sent_count = 0
         # Heartbeat counter for periodic self-stats poll
         self._hb_count = 0
-        # Pending outgoing messages queued from onDeviceModified
-        self._pending_sends: list = []
         # Backoff state for consecutive connection failures
         self._consec_failures = 0
         self._skip_until = 0.0  # monotonic time: skip heartbeats until this
         # Channel names already fetched flag (only need once)
         self._channels_fetched = False
-        # Lock to prevent overlapping heartbeat polls
-        self._poll_lock = threading.Lock()
+        # Lock to serialise all TCP connections (ESP32 accepts only one at a time)
+        self._conn_lock = threading.Lock()
         # Current mc instance (set by worker thread for cleanup on error)
         self._current_mc = None
 
@@ -250,9 +248,9 @@ class BasePlugin:
             Domoticz.Debug(f"Backoff active — skipping heartbeat ({remaining}s remaining)")
             return
 
-        # Prevent overlapping polls (previous heartbeat's thread still running)
-        if not self._poll_lock.acquire(blocking=False):
-            Domoticz.Debug("Previous poll still running — skipping heartbeat")
+        # Prevent overlapping connections (previous heartbeat or send still running)
+        if not self._conn_lock.acquire(blocking=False):
+            Domoticz.Debug("Previous connection still active — skipping heartbeat")
             return
 
         self._hb_count += 1
@@ -271,8 +269,12 @@ class BasePlugin:
         if text == self._last_sent_text:
             return
         self._last_sent_text = text
-        self._pending_sends.append(text)
-        Domoticz.Log(f"Message queued for next heartbeat: {text}")
+        Domoticz.Log(f"Sending message immediately: {text}")
+        t = threading.Thread(
+            target=self._immediate_send_worker, args=(text,),
+            daemon=True, name="MeshCoreSend"
+        )
+        t.start()
 
     # ── Device creation ───────────────────────────────────────────────────────
 
@@ -491,8 +493,8 @@ class BasePlugin:
     def _heartbeat_worker(self):
         """Run a short-lived connect→poll→disconnect cycle in a background thread.
 
-        Called from onHeartbeat.  The _poll_lock is held for the duration so
-        overlapping heartbeats are skipped.
+        Called from onHeartbeat.  The _conn_lock is held for the duration so
+        overlapping heartbeats and sends are skipped.
         """
         loop = asyncio.new_event_loop()
         self._current_mc = None
@@ -514,7 +516,55 @@ class BasePlugin:
             except Exception:
                 pass
             loop.close()
-            self._poll_lock.release()
+            self._conn_lock.release()
+
+    def _immediate_send_worker(self, text: str):
+        """Short-lived connect → send → disconnect fired from onDeviceModified.
+
+        Waits for the connection lock (ESP32 only accepts 1 TCP connection).
+        """
+        if not self._conn_lock.acquire(timeout=30):
+            self._queue.put(("send_result", {"ok": False, "target": "?",
+                                             "body": text, "result": "connection busy (timeout)"}))
+            return
+
+        loop = asyncio.new_event_loop()
+        mc = None
+        try:
+            mc = loop.run_until_complete(self._send_cycle(text, loop))
+        except Exception as exc:
+            Domoticz.Error(f"Immediate send error: {exc}")
+            self._queue.put(("send_result", {"ok": False, "target": "?",
+                                             "body": text, "result": str(exc)}))
+        finally:
+            if mc is not None:
+                self._safe_disconnect(mc, loop)
+            try:
+                loop.run_until_complete(loop.shutdown_asyncgens())
+            except Exception:
+                pass
+            loop.close()
+            self._conn_lock.release()
+
+    async def _send_cycle(self, text: str, loop):
+        """Connect, send one message, disconnect.  Returns mc for cleanup."""
+        from meshcore.tcp_cx import TCPConnection
+
+        connection = TCPConnection(self.host, self.port)
+        mc = MeshCore(connection)
+
+        res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
+        if res is None:
+            raise ConnectionError("Device did not respond to appstart.")
+
+        # We need contacts loaded for name → contact lookup
+        if not mc.contacts:
+            await asyncio.wait_for(mc.commands.get_contacts(), timeout=COMMAND_TIMEOUT)
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+
+        await self._send_message(mc, text)
+        return mc
 
     async def _poll_cycle(self, loop):
         """Connect, do all work.  Stores mc on self._current_mc for cleanup."""
@@ -566,12 +616,6 @@ class BasePlugin:
 
         # ── Collect incoming messages ─────────────────────────────────────
         await self._drain_push_events(mc)
-
-        # ── Send pending messages ─────────────────────────────────────────
-        sends = list(self._pending_sends)
-        self._pending_sends.clear()
-        for text in sends:
-            await self._send_message(mc, text)
 
         # ── Poll self-node stats periodically ─────────────────────────────
         if self._hb_count % SELF_STATS_HEARTBEATS == 0:
@@ -646,7 +690,7 @@ class BasePlugin:
         channel_names = {}
         for idx in range(8):
             try:
-                res = await asyncio.wait_for(mc.commands.get_channel(idx), timeout=5.0)
+                res = await asyncio.wait_for(mc.commands.get_channel(idx), timeout=2.0)
                 Domoticz.Debug(f"get_channel({idx}): type={res.type if res else None} payload={res.payload if res else None}")
                 if res and res.type == EventType.CHANNEL_INFO:
                     name = res.payload.get("channel_name", "").strip("\x00").strip()

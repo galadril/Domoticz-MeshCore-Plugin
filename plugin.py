@@ -127,6 +127,10 @@ class BasePlugin:
         self._conn_lock = threading.Lock()
         # Current mc instance (set by worker thread for cleanup on error)
         self._current_mc = None
+        # Active worker thread reference (for onStop cleanup)
+        self._worker_thread: threading.Thread | None = None
+        # Flag to prevent new connections during shutdown
+        self._stopping = False
 
     def _node_index(self, node_name: str) -> int:
         """Return slot index: 0 = self node, 1..N = contacts."""
@@ -237,11 +241,49 @@ class BasePlugin:
         Domoticz.Log(f"MeshCore plugin started – {self.host}:{self.port}")
 
     def onStop(self):
+        self._stopping = True
+        self.initialized = False
+
+        # Forcefully RST-close any active TCP connection so the ESP32 releases it
+        mc = self._current_mc
+        if mc is not None:
+            import socket as _socket
+            import struct
+            try:
+                transport = mc.connection_manager.connection.transport
+                if transport:
+                    raw_sock = transport.get_extra_info("socket")
+                    if raw_sock:
+                        raw_sock.setsockopt(
+                            _socket.SOL_SOCKET, _socket.SO_LINGER,
+                            struct.pack("ii", 1, 0)
+                        )
+                    transport.close()
+                    if raw_sock:
+                        raw_sock.close()
+            except Exception:
+                pass
+            try:
+                if mc.dispatcher and mc.dispatcher._task and not mc.dispatcher._task.done():
+                    mc.dispatcher.running = False
+                    mc.dispatcher._task.cancel()
+            except Exception:
+                pass
+            Domoticz.Log("MeshCore: force-closed active TCP connection.")
+
+        # Wait for any running worker thread to finish (it should exit quickly
+        # now that the socket is dead)
+        t = self._worker_thread
+        if t is not None and t.is_alive():
+            t.join(timeout=5)
+            if t.is_alive():
+                Domoticz.Log("MeshCore: worker thread did not stop within 5s.")
+
         self._remove_custom_page()
         Domoticz.Log("MeshCore plugin stopped.")
 
     def onHeartbeat(self):
-        if not self.initialized:
+        if not self.initialized or self._stopping:
             return
 
         # Drain results from the worker thread (device updates, logging)
@@ -266,10 +308,11 @@ class BasePlugin:
 
         self._hb_count += 1
         t = threading.Thread(target=self._heartbeat_worker, daemon=True, name="MeshCorePoll")
+        self._worker_thread = t
         t.start()
 
     def onDeviceModified(self, unit: int):
-        if unit != UNIT_SEND:
+        if unit != UNIT_SEND or self._stopping:
             return
         dev = Devices.get(UNIT_SEND)
         if not dev or not dev.sValue:
@@ -285,6 +328,7 @@ class BasePlugin:
             target=self._immediate_send_worker, args=(text,),
             daemon=True, name="MeshCoreSend"
         )
+        self._worker_thread = t
         t.start()
 
     # ── Device creation ───────────────────────────────────────────────────────

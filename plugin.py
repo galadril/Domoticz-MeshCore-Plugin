@@ -127,6 +127,8 @@ class BasePlugin:
         self._channels_fetched = False
         # Lock to prevent overlapping heartbeat polls
         self._poll_lock = threading.Lock()
+        # Current mc instance (set by worker thread for cleanup on error)
+        self._current_mc = None
 
     def _node_index(self, node_name: str) -> int:
         """Return slot index: 0 = self node, 1..N = contacts."""
@@ -148,35 +150,61 @@ class BasePlugin:
         return names
 
     def _safe_disconnect(self, mc, loop):
-        """Cleanly disconnect, then forcefully tear down the socket as a safety net."""
+        """Aggressively tear down the TCP connection so the ESP32 releases it immediately.
+
+        The ESP32 only accepts one TCP connection at a time.  A graceful FIN
+        leaves the OS socket in TIME_WAIT for up to 60 s, during which the
+        device refuses new connections.  Setting SO_LINGER(0) causes the
+        kernel to send an RST instead, freeing the port instantly on both
+        sides.
+        """
         if mc is None:
             return
-        # 1. Ask the library to disconnect gracefully
+        import socket as _socket
+        import struct
+
+        # 1. Grab the raw OS socket BEFORE anything closes it
+        raw_sock = None
+        try:
+            transport = mc.connection_manager.connection.transport
+            if transport:
+                raw_sock = transport.get_extra_info("socket")
+        except Exception:
+            pass
+
+        # 2. Set SO_LINGER(0) so close() sends RST, not FIN
+        if raw_sock:
+            try:
+                raw_sock.setsockopt(
+                    _socket.SOL_SOCKET, _socket.SO_LINGER,
+                    struct.pack("ii", 1, 0)   # l_onoff=1, l_linger=0
+                )
+            except OSError:
+                pass
+
+        # 3. Ask the library to disconnect (stops dispatcher, sets flags)
         try:
             loop.run_until_complete(asyncio.wait_for(mc.disconnect(), timeout=3.0))
         except Exception:
             pass
-        # 2. Close the asyncio transport
+
+        # 4. Close the asyncio transport (triggers the RST thanks to SO_LINGER)
         try:
             transport = mc.connection_manager.connection.transport
             if transport:
                 transport.close()
         except Exception:
             pass
-        # 3. Forcefully close the OS socket as a last resort
-        try:
-            transport = mc.connection_manager.connection.transport
-            if transport:
-                sock = transport.get_extra_info("socket")
-                if sock:
-                    import socket as _socket
-                    try:
-                        sock.shutdown(_socket.SHUT_RDWR)
-                    except OSError:
-                        pass
-                    sock.close()
-        except Exception:
-            pass
+
+        # 5. Belt-and-suspenders: forcefully close the OS socket if still open
+        if raw_sock:
+            try:
+                raw_sock.close()
+            except OSError:
+                pass
+
+        # 6. Give the OS a moment to actually send the RST packet
+        time.sleep(0.1)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -467,9 +495,9 @@ class BasePlugin:
         overlapping heartbeats are skipped.
         """
         loop = asyncio.new_event_loop()
-        mc = None
+        self._current_mc = None
         try:
-            mc = loop.run_until_complete(self._poll_cycle(loop))
+            loop.run_until_complete(self._poll_cycle(loop))
         except Exception as exc:
             Domoticz.Error(f"MeshCore poll error: {exc}\n{traceback.format_exc()}")
             self._consec_failures += 1
@@ -478,8 +506,9 @@ class BasePlugin:
                 self._skip_until = time.monotonic() + delay
                 Domoticz.Log(f"Backing off — next poll in {int(delay)}s (failure #{self._consec_failures})")
         finally:
-            if mc is not None:
-                self._safe_disconnect(mc, loop)
+            if self._current_mc is not None:
+                self._safe_disconnect(self._current_mc, loop)
+                self._current_mc = None
             try:
                 loop.run_until_complete(loop.shutdown_asyncgens())
             except Exception:
@@ -488,13 +517,20 @@ class BasePlugin:
             self._poll_lock.release()
 
     async def _poll_cycle(self, loop):
-        """Connect, do all work, disconnect.  Returns the mc instance for cleanup."""
+        """Connect, do all work.  Stores mc on self._current_mc for cleanup."""
+        from meshcore.tcp_cx import TCPConnection
+
         Domoticz.Debug(f"Connecting to {self.host}:{self.port}…")
-        mc = await asyncio.wait_for(
-            MeshCore.create_tcp(self.host, self.port), timeout=CONNECT_TIMEOUT
-        )
-        if mc is None:
-            raise ConnectionError("create_tcp returned None — device did not respond to appstart.")
+
+        # Build the MeshCore instance manually so we ALWAYS have the mc
+        # reference for RST-close cleanup, even if appstart fails.
+        connection = TCPConnection(self.host, self.port)
+        mc = MeshCore(connection)
+        self._current_mc = mc
+
+        res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
+        if res is None:
+            raise ConnectionError("Device did not respond to appstart.")
 
         Domoticz.Debug(f"Connected. self_info={mc.self_info}")
         if mc.self_info:
@@ -528,7 +564,7 @@ class BasePlugin:
             await self._fetch_channel_names(mc)
             self._channels_fetched = True
 
-        # ── Collect incoming messages (drain push events that arrived during connection)
+        # ── Collect incoming messages ─────────────────────────────────────
         await self._drain_push_events(mc)
 
         # ── Send pending messages ─────────────────────────────────────────
@@ -546,7 +582,6 @@ class BasePlugin:
         self._skip_until = 0.0
 
         Domoticz.Debug("Poll cycle complete — disconnecting.")
-        return mc
 
     async def _drain_push_events(self, mc):
         """Drain all pending messages from the device using get_msg().
@@ -618,11 +653,15 @@ class BasePlugin:
                     if name:
                         channel_names[str(idx)] = name
                 elif res and res.type == EventType.ERROR:
+                    # ERROR = no more channels, stop probing
                     break
             except asyncio.TimeoutError:
-                break
-            except Exception:
-                break
+                # Unconfigured channels may simply not respond — skip, don't abort
+                Domoticz.Debug(f"get_channel({idx}) timed out — skipping")
+                continue
+            except Exception as exc:
+                Domoticz.Debug(f"get_channel({idx}) error: {exc} — skipping")
+                continue
         Domoticz.Debug(f"Channel names fetched: {channel_names}")
         if channel_names:
             self._write_channel_names(channel_names)

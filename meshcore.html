@@ -275,6 +275,8 @@
             color: var(--muted);
         }
         .msg-chan.private { background: #2a3a4a; color: #7ab; }
+        .inbox-msg.sent { background: rgba(78,154,241,0.06); border-left: 3px solid var(--accent); }
+        .inbox-msg.sent .msg-sender { color: var(--muted); font-weight: 500; }
 
         /* ── Inbox filter bar ───────────────────────────────────── */
         #inbox-filters {
@@ -921,15 +923,16 @@
             }
 
             const html = visible.map(({ time, channel, sender, text }) => {
+                const isSent = sender && sender.startsWith("▶");
                 const chanHtml = channel
                     ? `<span class="msg-chan${channel === "Private" ? " private" : ""}">${escHtml(channel)}</span>`
                     : "";
-                const replyTarget = sender && sender !== "?" ? escHtml(sender) : "";
+                const replyTarget = sender && sender !== "?" && !isSent ? escHtml(sender) : "";
                 const replyChannel = channel && channel !== "Private" ? escHtml(channel) : "";
                 const replyBtn = replyTarget
                     ? `<button class="msg-reply-btn" onclick="_replyTo(event,'${replyTarget}','${replyChannel}')" title="Reply to ${replyTarget}">↩ Reply</button>`
                     : "";
-                return `<div class="inbox-msg">
+                return `<div class="inbox-msg${isSent ? " sent" : ""}">
           <span class="msg-time">${escHtml(time)}</span>
           ${chanHtml}
           ${sender ? `<span class="msg-sender">${escHtml(sender)}</span>` : ""}

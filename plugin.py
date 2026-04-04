@@ -926,12 +926,23 @@ class BasePlugin:
                 self._sent_count += 1
                 if UNIT_MSGS_SENT_ in Devices:
                     Devices[UNIT_MSGS_SENT_].Update(nValue=0, sValue=str(self._sent_count))
-                # Show sent message in the inbox so the user gets confirmation
+                # Show sent message in the inbox so the user gets confirmation.
+                # Use the same [C0|sender] / [P|sender] format as incoming msgs
+                # with a ▶ prefix on the sender to mark it as outgoing.
                 if UNIT_INBOX in Devices:
-                    Devices[UNIT_INBOX].Update(
-                        nValue=0,
-                        sValue=f"[TX>{d['target']}] {d['body']}"
-                    )
+                    tgt = d["target"]
+                    me = self._self_name or "Me"
+                    if tgt.startswith("#"):
+                        chan_tag = f"C{tgt[1:]}"
+                        Devices[UNIT_INBOX].Update(
+                            nValue=0,
+                            sValue=f"[{chan_tag}|▶ {me}] {d['body']}"
+                        )
+                    else:
+                        Devices[UNIT_INBOX].Update(
+                            nValue=0,
+                            sValue=f"[P|▶ {tgt}] {d['body']}"
+                        )
             else:
                 Domoticz.Error(f"Send failed to '{d['target']}': {d['result']}")
 

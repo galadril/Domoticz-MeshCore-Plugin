@@ -83,7 +83,7 @@ ONLINE_THRESHOLD_S = 28800
 SELF_STATS_HEARTBEATS = 10
 
 # Connection timeout for each short-lived TCP session (seconds)
-CONNECT_TIMEOUT    = 15
+CONNECT_TIMEOUT    = 8
 COMMAND_TIMEOUT    = 10
 
 # Backoff on consecutive connection failures
@@ -206,13 +206,10 @@ class BasePlugin:
         except Exception:
             pass
 
-        # 6. Cancel any remaining tasks on the loop
+        # 6. Cancel any remaining asyncio tasks (don't await — just cancel)
         try:
-            pending = asyncio.all_tasks(loop)
-            for task in pending:
+            for task in asyncio.all_tasks(loop):
                 task.cancel()
-            if pending:
-                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         except Exception:
             pass
 
@@ -567,10 +564,9 @@ class BasePlugin:
                 self._safe_disconnect(self._current_mc, loop)
                 self._current_mc = None
             try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
             except Exception:
                 pass
-            loop.close()
             self._conn_lock.release()
 
     def _immediate_send_worker(self, text: str):
@@ -596,10 +592,9 @@ class BasePlugin:
                 self._safe_disconnect(self._current_mc, loop)
                 self._current_mc = None
             try:
-                loop.run_until_complete(loop.shutdown_asyncgens())
+                loop.close()
             except Exception:
                 pass
-            loop.close()
             self._conn_lock.release()
 
     async def _send_cycle(self, text: str, loop):

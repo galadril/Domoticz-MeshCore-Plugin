@@ -6,6 +6,10 @@
     MeshCore channel. Messages are split into readable themed groups
     and spaced apart so the plugin can serialise each LoRa TX.
 
+    The script runs every minute. On the hour it builds themed
+    message groups and sends one per minute. Once all groups are
+    sent the script idles until the next hour.
+
     MESSAGE SYNTAX
     --------------
     The MeshCore plugin accepts messages on the Mesh Send device:
@@ -25,7 +29,6 @@
 -- ═══════════════════════════════════════════════════════════════════
 local CHANNEL_NAME      = 'General'                 -- Channel name to send to (or use a number like '0')
 local MESHCORE_SEND     = 'MeshCore - Mesh Send'    -- Name of the MeshCore Send device
-local MSG_DELAY         = 45                        -- Seconds between queued messages
 
 -- Device names – replace with your own Domoticz device names
 local DEVICES = {
@@ -44,13 +47,10 @@ return {
 
     on = {
         timer = {
-            'every 30 minutes',
+            'every minute',
         },
         devices = {
             DEVICES.presence,
-        },
-        customEvents = {
-            'meshcoreStatusPart',
         },
     },
 
@@ -61,9 +61,7 @@ return {
 
     data = {
         lastPresence = { initial = '' },
-        messageQueue = { initial = {} },
-        skipNext     = { initial = false },
-        lastQueueSend = { initial = 0 },
+        pendingMsgs  = { initial = {} },   -- queued messages, one sent per minute
     },
 
     execute = function(dz, triggeredItem)
@@ -109,27 +107,6 @@ return {
         end
 
         -- ═══════════════════════════════════════════════════════════
-        -- CUSTOM EVENT: send next queued message
-        -- ═══════════════════════════════════════════════════════════
-        if (triggeredItem.isCustomEvent) then
-            local q = dz.data.messageQueue
-            local now = os.time()
-            if (#q > 0 and (now - dz.data.lastQueueSend) >= MSG_DELAY) then
-                local msg = table.remove(q, 1)
-                sendMsg(msg)
-                dz.data.lastQueueSend = now
-                dz.data.messageQueue = q
-                if (#q > 0) then
-                    dz.emitCustomEvent('meshcoreStatusPart')
-                end
-            elseif (#q > 0) then
-                -- Not enough time elapsed; re-trigger to try again later
-                dz.emitCustomEvent('meshcoreStatusPart')
-            end
-            return
-        end
-
-        -- ═══════════════════════════════════════════════════════════
         -- PRESENCE CHANGE (immediate alert)
         -- ═══════════════════════════════════════════════════════════
         if (triggeredItem.isDevice and triggeredItem.name == DEVICES.presence) then
@@ -142,14 +119,23 @@ return {
         end
 
         -- ═══════════════════════════════════════════════════════════
-        -- HOURLY STATUS REPORT
-        -- Timer fires every 30 min; skip alternates to get ~60 min
+        -- TIMER: drain one queued message per minute
         -- ═══════════════════════════════════════════════════════════
-        if (dz.data.skipNext) then
-            dz.data.skipNext = false
+        local q = dz.data.pendingMsgs
+
+        if (#q > 0) then
+            sendMsg(table.remove(q, 1))
+            dz.data.pendingMsgs = q
             return
         end
-        dz.data.skipNext = true
+
+        -- ═══════════════════════════════════════════════════════════
+        -- HOURLY: build new report on the hour (minute == 0)
+        -- ═══════════════════════════════════════════════════════════
+        local minute = tonumber(os.date('%M'))
+        if (minute ~= 0) then
+            return
+        end
 
         local messages = {}
 
@@ -204,20 +190,12 @@ return {
             table.insert(messages, 'Energy: ' .. table.concat(energy, ' | '))
         end
 
-        -- Send first message now, queue the rest with delays
+        -- Send first message now, queue the rest (one per minute)
         if (#messages > 0) then
-            sendMsg(messages[1])
-            dz.data.lastQueueSend = os.time()
-            if (#messages > 1) then
-                local q = {}
-                for i = 2, #messages do
-                    table.insert(q, messages[i])
-                end
-                dz.data.messageQueue = q
-                dz.emitCustomEvent('meshcoreStatusPart')
-            end
+            sendMsg(table.remove(messages, 1))
+            dz.data.pendingMsgs = messages
         end
 
-        dz.log('Queued ' .. #messages .. ' status message(s) for channel #' .. CHANNEL_NAME, dz.LOG_INFO)
+        dz.log('Built ' .. (#messages + 1) .. ' status message(s) for #' .. CHANNEL_NAME, dz.LOG_INFO)
     end
 }

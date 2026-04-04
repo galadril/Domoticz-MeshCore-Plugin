@@ -142,7 +142,7 @@ Write to the **Mesh Send** device via the Domoticz API, a script, or the custom 
 
 A ready-to-use **dzVents script** is included that sends periodic home-status reports to a MeshCore channel — perfect for keeping an eye on your house via LoRa.
 
-The script sends **readable themed messages** (Climate, Weather, Energy) spaced 45 seconds apart, plus **instant alerts** on presence changes.
+The script sends **readable themed messages** (Climate, Weather, Energy) one per minute on the hour, plus **instant alerts** on presence changes.
 
 **Example output on the mesh:**
 ```

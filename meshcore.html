@@ -279,12 +279,22 @@
         /* ── Inbox filter bar ───────────────────────────────────── */
         #inbox-filters {
             display: flex;
-            align-items: center;
-            gap: 6px;
+            align-items: flex-start;
+            gap: 10px;
             margin-bottom: 10px;
             flex-wrap: wrap;
         }
-        #inbox-chips { display: flex; flex-wrap: wrap; gap: 6px; flex: 1; }
+        #filter-rows { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+        .filter-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+        .filter-label {
+            font-size: 0.68rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            color: var(--muted);
+            flex-shrink: 0;
+            min-width: 56px;
+        }
 
         .filter-btn {
             font-size: 0.75rem;
@@ -309,6 +319,7 @@
             outline: none;
             width: 160px;
             margin-left: auto;
+            align-self: flex-start;
         }
         #inbox-search:focus { border-color: var(--accent); }
 
@@ -515,8 +526,17 @@
         </div>
         <!-- filter / search -->
         <div id="inbox-filters">
-            <div id="inbox-chips"></div>
-            <input id="inbox-search" type="search" placeholder="Search sender / text…" oninput="_onInboxSearch(this.value)">
+            <div id="filter-rows">
+                <div class="filter-row">
+                    <span class="filter-label">Channel</span>
+                    <div id="channel-chips"></div>
+                </div>
+                <div class="filter-row">
+                    <span class="filter-label">Contact</span>
+                    <div id="contact-chips"></div>
+                </div>
+            </div>
+            <input id="inbox-search" type="search" placeholder="Search text…" oninput="_onInboxSearch(this.value)">
         </div>
         <!-- compose bar -->
         <div id="compose-bar" style="position:relative">
@@ -788,8 +808,9 @@
         let _inboxLastUpdate = null;  // LastUpdate of the last recorded entry
         let _inboxDevIdx2 = null;
         let _inboxLoaded = false; // true once initial history has been fetched
-        let _inboxChanFilter = null;  // null = all channels, or "Public" / "Private" / "Ch 1"
-        let _inboxSearch = "";   // wildcard text search on sender (case-insensitive)
+        let _inboxChanFilter = null;    // null = all, or "Public" / "Private" / "Ch 1"
+        let _inboxContactFilter = null;  // null = all, or sender name
+        let _inboxSearch = "";           // text search (case-insensitive)
 
         let _channelNames = {};  // idx string → name, loaded from meshcore_channels.json
 
@@ -884,17 +905,20 @@
                 container.innerHTML = `<div id="inbox-empty">No messages yet.</div>`;
                 _lastRenderedInboxHtml = "";
                 _renderChannelChips([]);
+                _renderContactChips([]);
                 return;
             }
 
             const channels = [...new Set(_inboxHistory.map(m => m.channel).filter(Boolean))].sort();
+            const contacts = [...new Set(_inboxHistory.map(m => m.sender).filter(Boolean))].sort();
             _renderChannelChips(channels);
+            _renderContactChips(contacts);
 
             const needle = _inboxSearch.toLowerCase();
             const visible = _inboxHistory.filter(m => {
                 if (_inboxChanFilter && m.channel !== _inboxChanFilter) return false;
-                if (needle && !(m.sender || "").toLowerCase().includes(needle)
-                    && !(m.text || "").toLowerCase().includes(needle)) return false;
+                if (_inboxContactFilter && m.sender !== _inboxContactFilter) return false;
+                if (needle && !(m.text || "").toLowerCase().includes(needle)) return false;
                 return true;
             });
 
@@ -931,46 +955,77 @@
             }
         }
 
-        function _renderChannelChips(channels) {
-            const chipBar = document.getElementById("inbox-chips");
+        function _renderChipRow(containerId, items, activeValue, onClickFn) {
+            const chipBar = document.getElementById(containerId);
             if (!chipBar) return;
-
-            // Build the set of channels we need buttons for
-            const needed = [null, ...channels];  // null = "All"
-
-            // Remove buttons for channels no longer present
-            chipBar.querySelectorAll(".filter-btn[data-chan]").forEach(btn => {
-                const val = btn.dataset.chan === "__all__" ? null : btn.dataset.chan;
+            const needed = [null, ...items];
+            chipBar.querySelectorAll(".filter-btn").forEach(btn => {
+                const val = btn.dataset.filterval === "__all__" ? null : btn.dataset.filterval;
                 if (!needed.includes(val)) btn.remove();
             });
-
-            // Add missing buttons and update active state
             needed.forEach(c => {
                 const key = c === null ? "__all__" : c;
                 const label = c === null ? "All" : c;
-                let btn = chipBar.querySelector(`.filter-btn[data-chan="${key}"]`);
+                let btn = chipBar.querySelector(`.filter-btn[data-filterval="${CSS.escape(key)}"]`);
                 if (!btn) {
                     btn = document.createElement("button");
                     btn.className = "filter-btn";
-                    btn.dataset.chan = key;
+                    btn.dataset.filterval = key;
                     btn.textContent = label;
-                    btn.addEventListener("click", () => _setChanFilter(c));
-                    // Insert before "All" goes first, others after
+                    btn.addEventListener("click", () => onClickFn(c));
                     if (c === null) chipBar.prepend(btn);
                     else chipBar.appendChild(btn);
                 }
-                btn.classList.toggle("active", _inboxChanFilter === c);
+                btn.classList.toggle("active", activeValue === c);
             });
+        }
+
+        function _renderChannelChips(channels) {
+            _renderChipRow("channel-chips", channels, _inboxChanFilter, _setChanFilter);
+        }
+
+        function _renderContactChips(contacts) {
+            _renderChipRow("contact-chips", contacts, _inboxContactFilter, _setContactFilter);
         }
 
         function _setChanFilter(key) {
             _inboxChanFilter = key;
+            _syncComposeTarget();
+            _lastRenderedInboxHtml = "";
             const container = document.getElementById("inbox-history");
             if (container) _renderInbox(container);
         }
 
+        function _setContactFilter(key) {
+            _inboxContactFilter = key;
+            _syncComposeTarget();
+            _lastRenderedInboxHtml = "";
+            const container = document.getElementById("inbox-history");
+            if (container) _renderInbox(container);
+        }
+
+        function _syncComposeTarget() {
+            const sel = document.getElementById("compose-target");
+            if (!sel) return;
+
+            // Contact filter takes priority — if filtering on a person, DM them
+            if (_inboxContactFilter) {
+                const opt = [...sel.options].find(o => o.value === _inboxContactFilter);
+                if (opt) { sel.value = _inboxContactFilter; return; }
+            }
+            // Otherwise, if a channel filter is active, select that channel
+            if (_inboxChanFilter && _inboxChanFilter !== "Private") {
+                const chanIdx = Object.entries(_channelNames).find(([, n]) => n === _inboxChanFilter);
+                if (chanIdx) {
+                    const val = `#${chanIdx[0]}`;
+                    if ([...sel.options].some(o => o.value === val)) sel.value = val;
+                }
+            }
+        }
+
         function _onInboxSearch(val) {
             _inboxSearch = val;
+            _lastRenderedInboxHtml = "";
             const container = document.getElementById("inbox-history");
             if (container) _renderInbox(container);
         }

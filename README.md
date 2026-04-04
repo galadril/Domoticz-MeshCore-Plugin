@@ -135,6 +135,25 @@ Write to the **Mesh Send** device via the Domoticz API, a script, or the custom 
 
 ----------
 
+## 📜 dzVents Scripting Example
+
+A ready-to-use **dzVents script** is included that sends periodic home-status reports to a MeshCore channel — perfect for keeping an eye on your house via LoRa.
+
+The script sends **readable themed messages** (Climate, Weather, Energy) spaced 45 seconds apart, plus **instant alerts** on presence changes.
+
+**Example output on the mesh:**
+```
+Climate: Indoor 20.3C, 52% | Thermostat 19.5C
+Weather: 14.8C, 65%
+Energy: Solar 1240W | Delivery 380W | Gas today 0.42 m3
+```
+
+➡️ **[Download the demo script](docs/meshcore_status_report.lua)**
+
+Copy it to `~/domoticz/scripts/dzVents/generated_scripts/`, edit the `CONFIGURATION` section at the top to match your device names and channel index, and enable it.
+
+----------
+
 ## 📊 Custom Dashboard
 
 Enable **Install Custom Dashboard** in the plugin settings, then navigate to:

@@ -83,14 +83,16 @@ ONLINE_THRESHOLD_S = 28800
 SELF_STATS_HEARTBEATS = 10
 
 # Connection timeout for each short-lived TCP session (seconds)
-CONNECT_TIMEOUT    = 8
+CONNECT_TIMEOUT    = 12
 COMMAND_TIMEOUT    = 10
 WORKER_TIMEOUT     = 60    # max seconds a worker thread may run before being abandoned
+POST_DISCONNECT_S  = 3     # minimum seconds to wait after disconnect before reconnecting
 
 # Backoff on consecutive connection failures
-BACKOFF_BASE_S     = 30     # first extra delay on failure (added on top of the heartbeat interval)
-BACKOFF_MAX_S      = 300    # 5 min max extra delay
+BACKOFF_BASE_S     = 60     # first extra delay on failure (added on top of the heartbeat interval)
+BACKOFF_MAX_S      = 600    # 10 min max extra delay
 BACKOFF_FACTOR     = 2.0
+BACKOFF_LOG_THRESH = 3      # after this many consecutive failures, downgrade Error→Debug
 
 
 def _bat_pct(mv: int) -> int:
@@ -133,6 +135,8 @@ class BasePlugin:
         self._worker_started: float = 0.0
         # Flag to prevent new connections during shutdown
         self._stopping = False
+        # Monotonic timestamp of last successful disconnect (for cooldown)
+        self._last_disconnect: float = 0.0
 
     def _force_kill_socket(self, mc):
         """Kill the raw TCP socket without touching the event loop."""
@@ -188,7 +192,7 @@ class BasePlugin:
         """Aggressively tear down the TCP connection so the ESP32 releases it immediately."""
         if mc is None:
             return
-        Domoticz.Log("_safe_disconnect: killing socket…")
+        Domoticz.Debug("_safe_disconnect: killing socket…")
         self._force_kill_socket(mc)
         # Cancel any remaining asyncio tasks (don't await — just cancel)
         try:
@@ -196,8 +200,9 @@ class BasePlugin:
                 task.cancel()
         except Exception:
             pass
-        time.sleep(0.1)
-        Domoticz.Log("_safe_disconnect: done.")
+        time.sleep(0.5)
+        self._last_disconnect = time.monotonic()
+        Domoticz.Debug("_safe_disconnect: done.")
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -282,6 +287,13 @@ class BasePlugin:
                     except RuntimeError:
                         pass
                 self._worker_thread = None
+
+        # Cooldown: don't reconnect too soon after the last disconnect
+        if self._last_disconnect > 0:
+            since = time.monotonic() - self._last_disconnect
+            if since < POST_DISCONNECT_S:
+                Domoticz.Debug(f"Post-disconnect cooldown ({POST_DISCONNECT_S - since:.0f}s remaining)")
+                return
 
         # Prevent overlapping connections (previous heartbeat or send still running)
         if not self._conn_lock.acquire(blocking=False):
@@ -531,81 +543,88 @@ class BasePlugin:
 
     def _heartbeat_worker(self):
         """Run a short-lived connect→poll→disconnect cycle in a background thread."""
-        Domoticz.Log("Worker: started")
+        Domoticz.Debug("Worker: started")
         loop = asyncio.new_event_loop()
         self._current_mc = None
         try:
-            Domoticz.Log("Worker: entering poll cycle…")
+            Domoticz.Debug("Worker: entering poll cycle…")
             loop.run_until_complete(self._poll_cycle(loop))
-            Domoticz.Log("Worker: poll cycle completed OK")
+            Domoticz.Debug("Worker: poll cycle completed OK")
         except Exception as exc:
-            Domoticz.Error(f"Worker: poll error: {exc}")
-            self._consec_failures += 1
-            delay = min(BACKOFF_BASE_S * (BACKOFF_FACTOR ** self._consec_failures), BACKOFF_MAX_S)
+            self._consec_failures = min(self._consec_failures + 1, 20)  # cap counter
+            if self._consec_failures <= BACKOFF_LOG_THRESH:
+                Domoticz.Error(f"Worker: poll error: {exc}")
+            else:
+                Domoticz.Debug(f"Worker: poll error (failure #{self._consec_failures}): {exc}")
+            delay = min(BACKOFF_BASE_S * (BACKOFF_FACTOR ** min(self._consec_failures, 10)), BACKOFF_MAX_S)
             if delay > 0:
                 self._skip_until = time.monotonic() + delay
                 Domoticz.Log(f"Worker: backing off {int(delay)}s (failure #{self._consec_failures})")
         finally:
-            Domoticz.Log("Worker: entering finally block…")
+            Domoticz.Debug("Worker: entering finally block…")
             if self._current_mc is not None:
-                Domoticz.Log("Worker: calling _safe_disconnect…")
+                Domoticz.Debug("Worker: calling _safe_disconnect…")
                 self._safe_disconnect(self._current_mc, loop)
                 self._current_mc = None
-            Domoticz.Log("Worker: closing event loop…")
+            Domoticz.Debug("Worker: closing event loop…")
             try:
                 loop.close()
             except Exception:
                 pass
-            Domoticz.Log("Worker: releasing _conn_lock…")
+            Domoticz.Debug("Worker: releasing _conn_lock…")
             self._conn_lock.release()
-            Domoticz.Log("Worker: done.")
+            Domoticz.Debug("Worker: done.")
 
     def _immediate_send_worker(self, text: str):
         """Short-lived connect → send → disconnect fired from onDeviceModified."""
-        Domoticz.Log(f"SendWorker: waiting for _conn_lock…")
+        Domoticz.Debug(f"SendWorker: waiting for _conn_lock…")
         if not self._conn_lock.acquire(timeout=30):
             Domoticz.Error("SendWorker: _conn_lock timeout after 30s")
             self._queue.put(("send_result", {"ok": False, "target": "?",
-                                             "body": text, "result": "connection busy (timeout)"}))
+                                              "body": text, "result": "connection busy (timeout)"}))
             return
 
-        Domoticz.Log(f"SendWorker: lock acquired, starting send cycle…")
+        Domoticz.Debug(f"SendWorker: lock acquired, starting send cycle…")
         loop = asyncio.new_event_loop()
         self._current_mc = None
         try:
             loop.run_until_complete(self._send_cycle(text, loop))
-            Domoticz.Log("SendWorker: send cycle completed OK")
+            Domoticz.Debug("SendWorker: send cycle completed OK")
         except Exception as exc:
             Domoticz.Error(f"SendWorker: error: {exc}")
             self._queue.put(("send_result", {"ok": False, "target": "?",
-                                             "body": text, "result": str(exc)}))
+                                              "body": text, "result": str(exc)}))
         finally:
-            Domoticz.Log("SendWorker: entering finally block…")
+            Domoticz.Debug("SendWorker: entering finally block…")
             if self._current_mc is not None:
-                Domoticz.Log("SendWorker: calling _safe_disconnect…")
+                Domoticz.Debug("SendWorker: calling _safe_disconnect…")
                 self._safe_disconnect(self._current_mc, loop)
                 self._current_mc = None
-            Domoticz.Log("SendWorker: closing event loop…")
+            Domoticz.Debug("SendWorker: closing event loop…")
             try:
                 loop.close()
             except Exception:
                 pass
-            Domoticz.Log("SendWorker: releasing _conn_lock…")
+            Domoticz.Debug("SendWorker: releasing _conn_lock…")
             self._conn_lock.release()
-            Domoticz.Log("SendWorker: done.")
+            Domoticz.Debug("SendWorker: done.")
 
     async def _connect_with_retry(self, label: str, max_attempts: int = 3):
         """Connect to the device with retries on appstart failure.
 
-        On each failed attempt, kills the socket, waits briefly, and retries
-        with a fresh TCPConnection + MeshCore instance.
+        On each failed attempt, kills the socket, waits with progressive
+        back-off, and retries with a fresh TCPConnection + MeshCore instance.
         Returns the connected mc instance or raises ConnectionError.
         """
         from meshcore.tcp_cx import TCPConnection
 
+        # Progressive delays between retries (seconds); gives ESP32 time to
+        # release the TCP slot and finish any in-progress work.
+        retry_delays = [3, 6, 10]
+
         last_err = None
         for attempt in range(1, max_attempts + 1):
-            Domoticz.Log(f"{label}: connect attempt {attempt}/{max_attempts}…")
+            Domoticz.Debug(f"{label}: connect attempt {attempt}/{max_attempts}…")
 
             connection = TCPConnection(self.host, self.port)
             mc = MeshCore(connection)
@@ -614,11 +633,12 @@ class BasePlugin:
             try:
                 res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
             except Exception as exc:
-                Domoticz.Log(f"{label}: connect exception on attempt {attempt}: {exc}")
+                Domoticz.Debug(f"{label}: connect exception on attempt {attempt}: {exc}")
                 self._force_kill_socket(mc)
                 last_err = exc
                 if attempt < max_attempts:
-                    await asyncio.sleep(2)
+                    delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+                    await asyncio.sleep(delay)
                 continue
 
             if res is not None:
@@ -626,11 +646,12 @@ class BasePlugin:
                 return mc
 
             # appstart returned None — device not ready
-            Domoticz.Log(f"{label}: appstart failed on attempt {attempt}, retrying…")
+            Domoticz.Debug(f"{label}: appstart failed on attempt {attempt}, retrying…")
             self._force_kill_socket(mc)
             last_err = ConnectionError("Device did not respond to appstart.")
             if attempt < max_attempts:
-                await asyncio.sleep(2)
+                delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
+                await asyncio.sleep(delay)
 
         raise last_err or ConnectionError("Failed to connect after retries.")
 
@@ -640,20 +661,20 @@ class BasePlugin:
 
         # We need contacts loaded for name → contact lookup
         if not mc.contacts:
-            Domoticz.Log("SendCycle: fetching contacts…")
+            Domoticz.Debug("SendCycle: fetching contacts…")
             await asyncio.wait_for(mc.commands.get_contacts(), timeout=COMMAND_TIMEOUT)
             await asyncio.sleep(0)
             await asyncio.sleep(0)
 
-        Domoticz.Log(f"SendCycle: sending message…")
+        Domoticz.Debug(f"SendCycle: sending message…")
         await self._send_message(mc, text)
-        Domoticz.Log("SendCycle: message sent.")
+        Domoticz.Debug("SendCycle: message sent.")
 
     async def _poll_cycle(self, loop):
         """Connect, do all work.  Stores mc on self._current_mc for cleanup."""
         mc = await self._connect_with_retry("Poll")
 
-        Domoticz.Log(f"Poll: connected. self_info keys={list(mc.self_info.keys()) if mc.self_info else 'None'}")
+        Domoticz.Debug(f"Poll: connected. self_info keys={list(mc.self_info.keys()) if mc.self_info else 'None'}")
         if mc.self_info:
             name = mc.self_info.get("name", "")
             if name:
@@ -661,7 +682,7 @@ class BasePlugin:
             self._queue.put(("self_info", dict(mc.self_info)))
 
         # ── Fetch contacts ────────────────────────────────────────────────
-        Domoticz.Log("Poll: fetching contacts…")
+        Domoticz.Debug("Poll: fetching contacts…")
         for attempt in range(5):
             try:
                 await asyncio.wait_for(mc.commands.get_contacts(), timeout=COMMAND_TIMEOUT)
@@ -676,7 +697,7 @@ class BasePlugin:
             await asyncio.sleep(1)
 
         if mc.contacts:
-            Domoticz.Log(f"Poll: got {len(mc.contacts)} contact(s)")
+            Domoticz.Debug(f"Poll: got {len(mc.contacts)} contact(s)")
             contacts_snapshot = {k: dict(v) for k, v in mc.contacts.items()}
             self._queue.put(("contacts", contacts_snapshot))
         else:
@@ -689,19 +710,19 @@ class BasePlugin:
             self._channels_fetched = True
 
         # ── Collect incoming messages ─────────────────────────────────────
-        Domoticz.Log("Poll: draining push events…")
+        Domoticz.Debug("Poll: draining push events…")
         await self._drain_push_events(mc)
 
         # ── Poll self-node stats periodically ─────────────────────────────
         if self._hb_count % SELF_STATS_HEARTBEATS == 0:
-            Domoticz.Log("Poll: polling self stats…")
+            Domoticz.Debug("Poll: polling self stats…")
             await self._poll_self_stats(mc)
 
         # Connection succeeded — reset backoff
         self._consec_failures = 0
         self._skip_until = 0.0
 
-        Domoticz.Log("Poll: cycle complete.")
+        Domoticz.Debug("Poll: cycle complete.")
 
     async def _drain_push_events(self, mc):
         """Drain all pending messages from the device using get_msg().

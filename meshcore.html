@@ -877,9 +877,12 @@
             _renderInbox(container);
         }
 
+        let _lastRenderedInboxHtml = "";  // dedup: skip DOM replace when nothing changed
+
         function _renderInbox(container) {
             if (!_inboxHistory.length) {
                 container.innerHTML = `<div id="inbox-empty">No messages yet.</div>`;
+                _lastRenderedInboxHtml = "";
                 _renderChannelChips([]);
                 return;
             }
@@ -897,10 +900,11 @@
 
             if (!visible.length) {
                 container.innerHTML = `<div id="inbox-empty">No messages match the filter.</div>`;
+                _lastRenderedInboxHtml = "";
                 return;
             }
 
-            container.innerHTML = visible.map(({ time, channel, sender, text }) => {
+            const html = visible.map(({ time, channel, sender, text }) => {
                 const chanHtml = channel
                     ? `<span class="msg-chan${channel === "Private" ? " private" : ""}">${escHtml(channel)}</span>`
                     : "";
@@ -917,6 +921,14 @@
           ${replyBtn}
         </div>`;
             }).join("");
+
+            // Only touch the DOM when content actually changed — preserves scroll position
+            if (html !== _lastRenderedInboxHtml) {
+                const scrollTop = container.scrollTop;
+                container.innerHTML = html;
+                container.scrollTop = scrollTop;
+                _lastRenderedInboxHtml = html;
+            }
         }
 
         function _renderChannelChips(channels) {

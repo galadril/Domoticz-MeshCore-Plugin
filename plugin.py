@@ -908,7 +908,7 @@ class BasePlugin:
     def _dispatch(self, item):
         kind = item[0]
         if kind == "message":
-            Domoticz.Log(f"Message: {item[1]}")
+            Domoticz.Debug(f"Message: {item[1]}")
             self._handle_message(item[1])
         elif kind == "contacts":
             self._handle_contacts(item[1])
@@ -916,7 +916,7 @@ class BasePlugin:
             self._handle_self_stats(item[1])
         elif kind == "self_info":
             name = item[1].get("name", "")
-            Domoticz.Log(f"Self info: name={name}, freq={item[1].get('radio_freq')} MHz")
+            Domoticz.Debug(f"Self info: name={name}, freq={item[1].get('radio_freq')} MHz")
             if name and name != self._self_name:
                 self._self_name = name
         elif kind == "send_result":
@@ -1004,7 +1004,7 @@ class BasePlugin:
             if adv_lat and adv_lon and not (adv_lat == 0.0 and adv_lon == 0.0):
                 self._node_locations[node_name] = {"lat": adv_lat, "lon": adv_lon}
 
-            Domoticz.Log(
+            Domoticz.Debug(
                 f"Contact '{node_name}' type={contact.get('type',-1)}: "
                 f"last_advert={int(now-last_advert)}s ago  "
                 f"last_activity={int(now-la) if la else 'never'}  "
@@ -1152,7 +1152,7 @@ class BasePlugin:
         if ls_unit in Devices:
             Devices[ls_unit].Update(nValue=0, sValue=time.strftime("%Y-%m-%d %H:%M:%S"))
 
-        Domoticz.Log(f"Self stats updated: bat={bat_mv}mV uptime={uptime_s}s rssi={rssi} snr={stats.get('last_snr')}")
+        Domoticz.Debug(f"Self stats updated: bat={bat_mv}mV uptime={uptime_s}s rssi={rssi} snr={stats.get('last_snr')}")
         self._write_device_map()
 
 

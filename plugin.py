@@ -126,6 +126,8 @@ class BasePlugin:
         self._skip_until = 0.0  # monotonic time: skip heartbeats until this
         # Channel names already fetched flag (only need once)
         self._channels_fetched = False
+        # Channel index→name map (populated from device), e.g. {0: "General", 1: "MyRoom"}
+        self._channel_names: dict = {}
         # Lock to serialise all TCP connections (ESP32 accepts only one at a time)
         self._conn_lock = threading.Lock()
         # Current mc instance (set by worker thread for cleanup on error)
@@ -830,9 +832,13 @@ class BasePlugin:
             except Exception as exc:
                 Domoticz.Debug(f"get_channel({idx}) error: {exc} — skipping")
                 continue
-        Domoticz.Debug(f"Channel names fetched: {channel_names}")
         if channel_names:
+            self._channel_names = {int(k): v for k, v in channel_names.items()}
+            parts = [f"#{k} = {v}" for k, v in sorted(channel_names.items())]
+            Domoticz.Log(f"MeshCore channels: {', '.join(parts)}")
             self._write_channel_names(channel_names)
+        else:
+            Domoticz.Debug("No channel names found on device.")
 
     async def _send_message(self, mc, text: str):
         """Send a message from the Mesh Send device value.
@@ -840,7 +846,8 @@ class BasePlugin:
         Syntax accepted:
           "hello world"          → direct message to the first tracked node
           "garden: hello"        → direct message to the node named 'garden'
-          "#0: hello"            → broadcast on channel 0
+          "#0: hello"            → broadcast on channel index 0
+          "#General: hello"      → broadcast on the channel named 'General'
           "#flood: hello"        → broadcast on channel 0 (alias)
         """
         target = None
@@ -851,8 +858,22 @@ class BasePlugin:
             prefix = prefix.strip()
             body   = rest.strip()
             if prefix.startswith("#"):
-                chan_part = prefix[1:].lower()
-                chan_idx  = 0 if chan_part in ("", "flood") else int(chan_part)
+                chan_part = prefix[1:].strip()
+                if chan_part.lower() in ("", "flood"):
+                    chan_idx = 0
+                elif chan_part.isdigit():
+                    chan_idx = int(chan_part)
+                else:
+                    # Resolve channel name → index (case-insensitive)
+                    chan_idx = None
+                    for idx, name in self._channel_names.items():
+                        if name.lower() == chan_part.lower():
+                            chan_idx = idx
+                            break
+                    if chan_idx is None:
+                        self._queue.put(("send_result", {"ok": False, "target": prefix,
+                                                         "body": body, "result": f"Unknown channel name '{chan_part}'. Known: {self._channel_names}"}))
+                        return
                 try:
                     result = await asyncio.wait_for(
                         mc.commands.send_chan_msg(chan_idx, body), timeout=15.0

@@ -130,8 +130,11 @@ Write to the **Mesh Send** device via the Domoticz API, a script, or the custom 
 |---|---|
 | `hello world` | Direct message to the first discovered contact |
 | `garden: hello` | Direct message to the node named `garden` |
-| `#0: hello` | Broadcast on channel 0 (flood) |
+| `#General: hello` | Broadcast on the channel named `General` |
+| `#0: hello` | Broadcast on channel index 0 |
 | `#flood: hello` | Broadcast on channel 0 (alias) |
+
+> **Tip:** Channel names are resolved automatically by the plugin — you don't need to look up numeric indices. Available channels are logged on startup (e.g. `MeshCore channels: #0 = General, #1 = MyRoom`).
 
 ----------
 
@@ -150,7 +153,7 @@ Energy: Solar 1240W | Delivery 380W | Gas today 0.42 m3
 
 ➡️ **[Download the demo script](docs/meshcore_status_report.lua)**
 
-Copy it to `~/domoticz/scripts/dzVents/generated_scripts/`, edit the `CONFIGURATION` section at the top to match your device names and channel index, and enable it.
+Copy it to `~/domoticz/scripts/dzVents/generated_scripts/`, edit the `CONFIGURATION` section at the top to match your device names and channel name, and enable it.
 
 ----------
 

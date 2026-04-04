@@ -5,5 +5,3 @@
 /.vs
 /__pycache__
 /.claude
-/meshcore-theme/domoticz-sources
-/scripts/dzVents/generated_scripts/meshcore_status_report.lua

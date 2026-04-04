@@ -1204,7 +1204,7 @@
                 grp.label = "Channels";
                 for (const [idx, name] of chanEntries) {
                     const o = document.createElement("option");
-                    o.value = `#${idx}`;
+                    o.value = `#${name}`;
                     o.textContent = name;
                     grp.appendChild(o);
                 }
@@ -1257,7 +1257,7 @@
             const body = input.value.trim();
             if (!body) return;
 
-            // Build the value string the plugin expects: "target: body" or "#idx: body"
+            // Build the value string the plugin expects: "target: body", "#name: body", or "#idx: body"
             const sendValue = `${target}: ${body}`;
 
             // Look up the Mesh Send device idx from the device map
@@ -1450,9 +1450,8 @@
                         tmp.dataset.reply = "1";
                         sel.appendChild(tmp);
                     }
-                    // Derive the #idx value from the channel name via _channelNames
-                    const chanIdx = Object.entries(_channelNames).find(([, n]) => n === channel);
-                    tmp.value = chanIdx ? `#${chanIdx[0]}` : `#0`;
+                    // Use channel name directly — the plugin resolves name → index
+                    tmp.value = `#${channel}`;
                     tmp.textContent = `# ${channel} (reply)`;
                     sel.value = tmp.value;
                 }

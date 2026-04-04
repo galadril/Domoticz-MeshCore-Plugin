@@ -926,6 +926,12 @@ class BasePlugin:
                 self._sent_count += 1
                 if UNIT_MSGS_SENT_ in Devices:
                     Devices[UNIT_MSGS_SENT_].Update(nValue=0, sValue=str(self._sent_count))
+                # Show sent message in the inbox so the user gets confirmation
+                if UNIT_INBOX in Devices:
+                    Devices[UNIT_INBOX].Update(
+                        nValue=0,
+                        sValue=f"[TX>{d['target']}] {d['body']}"
+                    )
             else:
                 Domoticz.Error(f"Send failed to '{d['target']}': {d['result']}")
 

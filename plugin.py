@@ -189,11 +189,18 @@ class BasePlugin:
         return names
 
     def _safe_disconnect(self, mc, loop):
-        """Aggressively tear down the TCP connection so the ESP32 releases it immediately."""
+        """Cleanly disconnect using the library's own mc.disconnect(), then
+        fall back to a hard socket kill if that fails or times out."""
         if mc is None:
             return
-        Domoticz.Debug("_safe_disconnect: killing socket…")
-        self._force_kill_socket(mc)
+        # Try the library's graceful disconnect first
+        try:
+            loop.run_until_complete(asyncio.wait_for(mc.disconnect(), timeout=5))
+            Domoticz.Debug("_safe_disconnect: graceful disconnect OK.")
+        except Exception:
+            # Graceful path failed — force-kill the socket
+            Domoticz.Debug("_safe_disconnect: graceful failed, force-killing socket…")
+            self._force_kill_socket(mc)
         # Cancel any remaining asyncio tasks (don't await — just cancel)
         try:
             for task in asyncio.all_tasks(loop):
@@ -203,6 +210,18 @@ class BasePlugin:
         time.sleep(0.5)
         self._last_disconnect = time.monotonic()
         Domoticz.Debug("_safe_disconnect: done.")
+
+    async def _async_disconnect(self, mc):
+        """Graceful disconnect for use inside async poll/send cycles."""
+        if mc is None:
+            return
+        try:
+            await asyncio.wait_for(mc.disconnect(), timeout=5)
+            Domoticz.Debug("_async_disconnect: OK.")
+        except Exception:
+            Domoticz.Debug("_async_disconnect: graceful failed, force-killing…")
+            self._force_kill_socket(mc)
+        self._last_disconnect = time.monotonic()
 
     # ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -612,7 +631,7 @@ class BasePlugin:
     async def _connect_with_retry(self, label: str, max_attempts: int = 3):
         """Connect to the device with retries on appstart failure.
 
-        On each failed attempt, kills the socket, waits with progressive
+        On each failed attempt, disconnects cleanly, waits with progressive
         back-off, and retries with a fresh TCPConnection + MeshCore instance.
         Returns the connected mc instance or raises ConnectionError.
         """
@@ -634,7 +653,7 @@ class BasePlugin:
                 res = await asyncio.wait_for(mc.connect(), timeout=CONNECT_TIMEOUT)
             except Exception as exc:
                 Domoticz.Debug(f"{label}: connect exception on attempt {attempt}: {exc}")
-                self._force_kill_socket(mc)
+                await self._async_disconnect(mc)
                 last_err = exc
                 if attempt < max_attempts:
                     delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
@@ -647,7 +666,7 @@ class BasePlugin:
 
             # appstart returned None — device not ready
             Domoticz.Debug(f"{label}: appstart failed on attempt {attempt}, retrying…")
-            self._force_kill_socket(mc)
+            await self._async_disconnect(mc)
             last_err = ConnectionError("Device did not respond to appstart.")
             if attempt < max_attempts:
                 delay = retry_delays[min(attempt - 1, len(retry_delays) - 1)]
@@ -669,6 +688,10 @@ class BasePlugin:
         Domoticz.Debug(f"SendCycle: sending message…")
         await self._send_message(mc, text)
         Domoticz.Debug("SendCycle: message sent.")
+
+        # Gracefully disconnect inside the async context (proper TCP FIN)
+        await self._async_disconnect(mc)
+        self._current_mc = None
 
     async def _poll_cycle(self, loop):
         """Connect, do all work.  Stores mc on self._current_mc for cleanup."""
@@ -721,6 +744,10 @@ class BasePlugin:
         # Connection succeeded — reset backoff
         self._consec_failures = 0
         self._skip_until = 0.0
+
+        # Gracefully disconnect inside the async context (proper TCP FIN)
+        await self._async_disconnect(mc)
+        self._current_mc = None
 
         Domoticz.Debug("Poll: cycle complete.")
 

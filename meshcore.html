@@ -825,9 +825,9 @@
         }
 
         function _parseInboxData(raw) {
-            // New format: [C0|sender] text  or  [P|sender] text
+            // Format: [ChannelName|sender] text  or  [P|sender] text
+            // Legacy: [C0|sender] text  or  [sender] text  (no pipe)
 
-            // Legacy format: [sender] text  (no pipe)
             const m = raw.match(/^\[([^\]]+)\]\s*(.*)/s);
             if (!m) return { channel: null, sender: "", text: raw };
             const meta = m[1], text = m[2];
@@ -835,7 +835,16 @@
             if (pipe >= 0) {
                 const chanPart = meta.slice(0, pipe);
                 const sender = meta.slice(pipe + 1);
-                const channel = chanPart === "P" ? "Private" : _chanLabel(chanPart.slice(1));
+                let channel;
+                if (chanPart === "P") {
+                    channel = "Private";
+                } else if (/^C\d+$/.test(chanPart)) {
+                    // Legacy C<idx> format — resolve via _chanLabel
+                    channel = _chanLabel(chanPart.slice(1));
+                } else {
+                    // New format — channel name is already in the tag
+                    channel = chanPart;
+                }
                 return { channel, sender, text };
             }
             return { channel: null, sender: meta, text };

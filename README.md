@@ -159,27 +159,29 @@ Energy: Solar 1240W | Delivery 380W | Gas today 0.42 m3
 
 Turns your Domoticz into an **interactive chat bot** on your MeshCore channel. Send a command from any LoRa device and receive live status information back.
 
-The script filters on a specific channel tag, ignores its own outgoing echoes, and queues multi-part replies one per minute to avoid LoRa TX overlap.
+Commands must start with a **prefix character** (default: `!`) so the bot only reacts to explicit requests and never responds to its own messages. The prefix is configurable via `CMD_PREFIX` in the script.
+
+The script filters on the channel name (matching `CHANNEL_NAME`) and queues multi-part replies one per minute to avoid LoRa TX overlap.
 
 **Supported commands** (case-insensitive):
 
 | Command | Description |
 |---|---|
-| `help` | List available commands |
-| `status` | Full summary (climate, weather, energy, house) |
-| `climate` / `klimaat` | Indoor climate + heating status |
-| `weather` / `weer` | Outdoor weather conditions |
-| `energy` / `energie` | Power, solar, battery, gas |
-| `home` / `huis` | Water usage, presence |
-| `device <name>` / `apparaat <naam>` | Query any Domoticz device by name |
-| `switches` / `schakelaars` | List all switches and their states |
-| `temp` | All temperature sensors |
+| `!help` | List available commands |
+| `!status` | Full summary (climate, weather, energy, house) |
+| `!climate` / `!klimaat` | Indoor climate + heating status |
+| `!weather` / `!weer` | Outdoor weather conditions |
+| `!energy` / `!energie` | Power, solar, battery, gas |
+| `!home` / `!huis` | Water usage, presence |
+| `!device <name>` / `!apparaat <naam>` | Query any Domoticz device by name |
+| `!switches` / `!schakelaars` | List all switches and their states |
+| `!temp` | All temperature sensors |
 
 **Example conversation on the mesh:**
 ```
-[You]  → climate
+[You]  → !climate
 [Bot]  → Climate: Indoor 20.3C, 52% | Thermostat 19.5C | Heat pump: Heating
-[You]  → device Power
+[You]  → !device Power
 [Bot]  → Power: 380W (updated: 2025-01-15 14:32:00)
 ```
 

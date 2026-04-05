@@ -948,13 +948,15 @@ class BasePlugin:
                 if UNIT_MSGS_SENT_ in Devices:
                     Devices[UNIT_MSGS_SENT_].Update(nValue=0, sValue=str(self._sent_count))
                 # Show sent message in the inbox so the user gets confirmation.
-                # Use the same [C0|sender] / [P|sender] format as incoming msgs
+                # Use the same [ChannelName|sender] / [P|sender] format as incoming msgs
                 # with a ▶ prefix on the sender to mark it as outgoing.
                 if UNIT_INBOX in Devices:
                     tgt = d["target"]
                     me = self._self_name or "Me"
                     if tgt.startswith("#"):
-                        chan_tag = f"C{tgt[1:]}"
+                        chan_idx_str = tgt[1:]
+                        chan_idx_int = int(chan_idx_str) if chan_idx_str.isdigit() else None
+                        chan_tag = self._channel_names.get(chan_idx_int, f"C{chan_idx_str}") if chan_idx_int is not None else f"C{chan_idx_str}"
                         Devices[UNIT_INBOX].Update(
                             nValue=0,
                             sValue=f"[{chan_tag}|▶ {me}] {d['body']}"
@@ -1074,14 +1076,14 @@ class BasePlugin:
 
         display_name = node_name or prefix or "?"
 
-        # Channel tag: C<idx> for channel messages, P for private
+        # Channel tag: resolve index to name when available, fall back to C<idx>
         channel_idx = msg.get("channel_idx")
         if msg_type in ("CHAN", "channel_message") and channel_idx is not None:
-            chan_tag = f"C{channel_idx}"
+            chan_tag = self._channel_names.get(channel_idx, f"C{channel_idx}")
         else:
             chan_tag = "P"
 
-        # Update global inbox — format: [C0|sender] text  or  [P|sender] text
+        # Update global inbox — format: [ChannelName|sender] text  or  [P|sender] text
         if UNIT_INBOX in Devices:
             Devices[UNIT_INBOX].Update(nValue=0, sValue=f"[{chan_tag}|{display_name}] {text_body}")
 

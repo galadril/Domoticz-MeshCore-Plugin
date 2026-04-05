@@ -13,23 +13,26 @@
     Multi-line responses (e.g. full status) are queued and sent one
     per minute to avoid LoRa TX overlap.
 
+    The inbox format is: [ChannelName|sender] text  or  [P|sender] text
+    Commands must start with a prefix character (default: !) so the
+    bot only reacts to explicit requests and never to its own replies.
+
     SUPPORTED COMMANDS (case-insensitive)
     ??????????????????????????????????????
-      help             ? list available commands
-      status           ? full summary (climate, weather, energy, house)
-      climate          ? indoor climate + heating status
-      weather          ? outdoor weather conditions
-      energy           ? power, solar, battery, gas
-      home             ? water usage, presence
-      device <name>    ? query any Domoticz device by name
-      switches         ? list all switches and their states
-      temp             ? all temperature sensors
+      !help             ? list available commands
+      !status           ? full summary (climate, weather, energy, house)
+      !climate          ? indoor climate + heating status
+      !weather          ? outdoor weather conditions
+      !energy           ? power, solar, battery, gas
+      !home             ? water usage, presence
+      !device <name>    ? query any Domoticz device by name
+      !switches         ? list all switches and their states
+      !temp             ? all temperature sensors
 
     CONFIGURATION
     ?????????????
     Set CHANNEL_NAME to the channel you want to monitor and reply on.
-    Set CHANNEL_TAG to match the tag the Inbox uses (e.g. C0, C1).
-    Set SELF_NAME to your own node name so the script ignores echoes.
+    Set CMD_PREFIX to the prefix character for commands (default: !).
     Adjust device names in the command handlers to match your setup.
 
     MESSAGE SYNTAX
@@ -43,10 +46,9 @@
 -- CONFIGURATION – adjust these to match your setup
 -- ???????????????????????????????????????????????????????????????????
 local CHANNEL_NAME      = 'General'                  -- Channel to monitor AND reply on
-local CHANNEL_TAG       = 'C0'                       -- Tag the Inbox uses for this channel (C0, C1, etc.)
 local MESHCORE_INBOX    = 'MeshCore - Mesh Inbox'    -- Name of the MeshCore Inbox device
 local MESHCORE_SEND     = 'MeshCore - Mesh Send'     -- Name of the MeshCore Send device
-local SELF_NAME         = 'MyNode'                   -- Your own node name (to ignore echoes)
+local CMD_PREFIX        = '!'                        -- Command prefix (messages without this are ignored)
 
 -- Device names – replace with your own Domoticz device names
 local DEVICES = {
@@ -139,7 +141,7 @@ return {
         -- ?????????????????????????????????????????????????????????
 
         local function cmdHelp()
-            return 'Commands: status | climate | weather | energy | home | device <name> | switches | temp | help'
+            return 'Commands: ' .. CMD_PREFIX .. 'status | ' .. CMD_PREFIX .. 'climate | ' .. CMD_PREFIX .. 'weather | ' .. CMD_PREFIX .. 'energy | ' .. CMD_PREFIX .. 'home | ' .. CMD_PREFIX .. 'device <name> | ' .. CMD_PREFIX .. 'switches | ' .. CMD_PREFIX .. 'temp | ' .. CMD_PREFIX .. 'help'
         end
 
         local function cmdClimate()
@@ -344,32 +346,30 @@ return {
 
         dz.log('Inbox received: ' .. raw, dz.LOG_INFO)
 
-        -- Parse format: [C0|sender] text  or  [P|sender] text
-        local tag, sender, body = raw:match('^%[([^|]+)|([^%]]+)%]%s*(.*)$')
-        if (tag == nil) then
+        -- Parse format: [ChannelName|sender] text  or  [P|sender] text
+        local channel, sender, body = raw:match('^%[([^|]+)|([^%]]+)%]%s*(.*)$')
+        if (channel == nil) then
             dz.log('Could not parse inbox message, ignoring.', dz.LOG_DEBUG)
             return
         end
 
-        -- Only respond to our channel
-        if (tag ~= CHANNEL_TAG) then
-            dz.log('Message on tag [' .. tag .. '], not our channel [' .. CHANNEL_TAG .. ']. Ignoring.', dz.LOG_DEBUG)
-            return
-        end
-
-        -- Ignore outgoing messages (marked with ?)
-        if (sender:find('?') ~= nil) then
-            dz.log('Ignoring own outgoing message.', dz.LOG_DEBUG)
-            return
-        end
-
-        -- Ignore messages from ourselves (echo)
-        if (trim(sender) == SELF_NAME) then
-            dz.log('Ignoring echo from self.', dz.LOG_DEBUG)
+        -- Only respond to messages on our channel
+        if (channel ~= CHANNEL_NAME) then
+            dz.log('Message on [' .. channel .. '], not our channel [' .. CHANNEL_NAME .. ']. Ignoring.', dz.LOG_DEBUG)
             return
         end
 
         body = trim(body)
+        if (body == '') then return end
+
+        -- Only respond to messages that start with the command prefix
+        if (body:sub(1, #CMD_PREFIX) ~= CMD_PREFIX) then
+            dz.log('No command prefix (' .. CMD_PREFIX .. '), ignoring.', dz.LOG_DEBUG)
+            return
+        end
+
+        -- Strip the prefix
+        body = trim(body:sub(#CMD_PREFIX + 1))
         if (body == '') then return end
 
         dz.log('Command from ' .. sender .. ': ' .. body, dz.LOG_INFO)
@@ -401,7 +401,7 @@ return {
             local devName = trim(body:sub(cmd:find(' ') + 1))
             reply = cmdDevice(devName)
         else
-            reply = 'Unknown command. Send "help" for options.'
+            reply = 'Unknown command. Send "' .. CMD_PREFIX .. 'help" for options.'
         end
 
         -- ?????????????????????????????????????????????????????????

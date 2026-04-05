@@ -1,5 +1,4 @@
 ﻿--[[
-    --[[
     MeshCore – dzVents Status Report (demo)
     ========================================
     Example script that sends periodic home-status updates to a

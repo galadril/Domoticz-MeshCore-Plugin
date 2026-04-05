@@ -138,11 +138,13 @@ Write to the **Mesh Send** device via the Domoticz API, a script, or the custom 
 
 ----------
 
-## 📜 dzVents Scripting Example
+## 📜 dzVents Example Scripts
 
-A ready-to-use **dzVents script** is included that sends periodic home-status reports to a MeshCore channel — perfect for keeping an eye on your house via LoRa.
+Two ready-to-use **dzVents demo scripts** are included in the [`docs/`](docs/) folder. Copy either (or both) to `~/domoticz/scripts/dzVents/generated_scripts/`, edit the `CONFIGURATION` block at the top to match your device names, channel name and node name, and enable it.
 
-The script sends **readable themed messages** (Climate, Weather, Energy) one per minute on the hour, plus **instant alerts** on presence changes.
+### 📊 Status Report — periodic home updates
+
+Sends **readable themed messages** (Climate, Weather, Energy) one per minute on the hour, plus **instant alerts** on presence changes — perfect for keeping an eye on your house via LoRa.
 
 **Example output on the mesh:**
 ```
@@ -151,9 +153,37 @@ Weather: 14.8C, 65%
 Energy: Solar 1240W | Delivery 380W | Gas today 0.42 m3
 ```
 
-➡️ **[Download the demo script](docs/meshcore_status_report.lua)**
+➡️ **[Download the status report script](docs/meshcore_status_report.lua)**
 
-Copy it to `~/domoticz/scripts/dzVents/generated_scripts/`, edit the `CONFIGURATION` section at the top to match your device names and channel name, and enable it.
+### 💬 Chat Responder — interactive command bot
+
+Turns your Domoticz into an **interactive chat bot** on your MeshCore channel. Send a command from any LoRa device and receive live status information back.
+
+The script filters on a specific channel tag, ignores its own outgoing echoes, and queues multi-part replies one per minute to avoid LoRa TX overlap.
+
+**Supported commands** (case-insensitive):
+
+| Command | Description |
+|---|---|
+| `help` | List available commands |
+| `status` | Full summary (climate, weather, energy, house) |
+| `climate` / `klimaat` | Indoor climate + heating status |
+| `weather` / `weer` | Outdoor weather conditions |
+| `energy` / `energie` | Power, solar, battery, gas |
+| `home` / `huis` | Water usage, presence |
+| `device <name>` / `apparaat <naam>` | Query any Domoticz device by name |
+| `switches` / `schakelaars` | List all switches and their states |
+| `temp` | All temperature sensors |
+
+**Example conversation on the mesh:**
+```
+[You]  → climate
+[Bot]  → Climate: Indoor 20.3C, 52% | Thermostat 19.5C | Heat pump: Heating
+[You]  → device Power
+[Bot]  → Power: 380W (updated: 2025-01-15 14:32:00)
+```
+
+➡️ **[Download the chat responder script](docs/meshcore_chat_responder.lua)**
 
 ----------
 

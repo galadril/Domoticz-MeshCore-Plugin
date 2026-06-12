@@ -7,6 +7,10 @@ Verifies:
       compare reliably with lowercased on-air hashes.
   (c) The _on_rx_log path lowercases chan_hash before counting so keys
       always match the lowercase-stored chan_hash_to_name.
+  (d) _load_rx_log restores _chan_hash_counts (the "Hashes heard on air"
+      table) from the persisted stats.chan_hash_counts dict, lowercasing
+      and merging keys, skipping junk, and never double-counting live
+      counters on a warm disable→enable.
 """
 import _bootstrap  # noqa: F401  (sys.path side-effect)
 import json
@@ -107,6 +111,82 @@ class TestLoadRxLogRestoresChanHash(unittest.TestCase):
         self.assertIn("a3", result)
         self.assertNotIn("", result)
         self.assertNotIn("b1", result)
+
+
+class TestLoadRxLogRestoresChanHashCounts(unittest.TestCase):
+    """(d) _load_rx_log must restore _chan_hash_counts from stats.chan_hash_counts."""
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        p = _plugin()
+        p._packet_times.clear()
+        with p._rx_log_lock:
+            p._chan_hash_counts.clear()
+            p._chan_hash_to_name = {}
+
+    def tearDown(self):
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+        p = _plugin()
+        p._packet_times.clear()
+        with p._rx_log_lock:
+            p._chan_hash_counts.clear()
+            p._chan_hash_to_name = {}
+
+    def _run_load(self, payload, preexisting_counts=None):
+        p = _plugin()
+        path = os.path.join(self.tmpdir, "meshcore_rx_log.json")
+        with open(path, "w") as f:
+            json.dump(payload, f)
+        orig = p._rx_log_path
+        p._rx_log_path = lambda: path
+        p._packet_times.clear()
+        with p._rx_log_lock:
+            p._chan_hash_counts.clear()
+            if preexisting_counts:
+                p._chan_hash_counts.update(preexisting_counts)
+        try:
+            p._load_rx_log()
+        finally:
+            p._rx_log_path = orig
+        with p._rx_log_lock:
+            return dict(p._chan_hash_counts)
+
+    def test_restore_populates_counts(self):
+        result = self._run_load({
+            "packet_times": [],
+            "stats": {"chan_hash_counts": {"a3": 42, "7f": 3}},
+        })
+        self.assertEqual(result.get("a3"), 42)
+        self.assertEqual(result.get("7f"), 3)
+
+    def test_restore_lowercases_and_merges_keys(self):
+        """Mixed-case duplicates of the same hash must merge under lowercase."""
+        result = self._run_load({
+            "packet_times": [],
+            "stats": {"chan_hash_counts": {"A3": 10, "a3": 5}},
+        })
+        self.assertNotIn("A3", result)
+        self.assertEqual(result.get("a3"), 15)
+
+    def test_restore_skips_junk_values(self):
+        """Empty keys, non-numeric and non-positive counts must be skipped."""
+        result = self._run_load({
+            "packet_times": [],
+            "stats": {"chan_hash_counts": {"a3": 7, "": 9, "b1": "x", "c2": 0}},
+        })
+        self.assertEqual(result, {"a3": 7})
+
+    def test_restore_missing_stats_is_noop(self):
+        result = self._run_load({"packet_times": []})
+        self.assertEqual(result, {})
+
+    def test_restore_does_not_double_count_live_counters(self):
+        """Non-empty live counters (warm re-enable) must be left untouched."""
+        result = self._run_load(
+            {"packet_times": [], "stats": {"chan_hash_counts": {"a3": 42}}},
+            preexisting_counts={"a3": 5},
+        )
+        self.assertEqual(result.get("a3"), 5)
 
 
 def _make_rx_event(chan_hash, payload_typename="CHAN_DATA"):

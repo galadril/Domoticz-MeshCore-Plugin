@@ -1315,9 +1315,38 @@
         .contact-row-header .row-bulk-actions button:disabled {
             opacity: 0.4; cursor: not-allowed;
         }
+        .contact-row-header-bulk {
+            border-top: none;
+            padding-top: 0;
+        }
+        .contact-list-head {
+            position: sticky;
+            top: 0;
+            z-index: 2;
+            background: var(--bg);
+            border-radius: var(--dz-border-radius, 8px) var(--dz-border-radius, 8px) 0 0;
+        }
+        .row-sort {
+            cursor: pointer;
+            user-select: none;
+            white-space: nowrap;
+        }
+        .row-sort:hover { color: var(--text); }
+        .row-sort-active { color: var(--text); }
+        .sort-caret { opacity: 0.35; }
+        .sort-caret-active { opacity: 1; color: var(--accent); }
         .contact-row { cursor: pointer; transition: background 0.1s; }
         .contact-row:last-child { border-bottom: none; }
         .contact-row:hover { background: rgba(var(--dz-overlay-rgb, 255,255,255), 0.04); }
+        .contacts-sentinel {
+            text-align: center;
+            padding: 8px 4px;
+            font-size: 0.78rem;
+            color: var(--muted);
+            /* Span the full row inside the flex-wrap cards grid */
+            flex: 0 0 100%;
+            width: 100%;
+        }
         .contact-row.compose-selected { background: rgba(var(--dz-accent-rgb,  78,154,241), 0.08); }
         .contact-row.row-selected     { background: rgba(var(--dz-danger-rgb, 224,85,85),   0.08); }
         /* Custom icon-based checkbox (Domoticz host CSS sometimes hides native ones). */
@@ -2013,6 +2042,12 @@
         #chan-slots-list {
             max-height: 340px;
             overflow-y: auto;
+            /* .panel-view is a flex column; an overflow:auto child has an
+               automatic minimum size of 0, so once the hashes-heard table
+               below grows past the panel height, flex shrinks this list to
+               zero and the slot rows (with their Add/Remove buttons) vanish.
+               Opt out of shrinking — the list scrolls within its own cap. */
+            flex: none;
         }
         .chan-slot-row {
             display: grid;
@@ -3163,7 +3198,14 @@
                 // guards below).
                 if (msg.deviceMap && typeof msg.deviceMap === 'object') _deviceMap    = msg.deviceMap;
                 if (msg.stats     && typeof msg.stats     === 'object') _stats        = msg.stats;
-                if (msg.heard     && typeof msg.heard     === 'object') _heard        = msg.heard;
+                if (msg.heard     && typeof msg.heard     === 'object') {
+                    // Restore pubkey field (slim format strips it from node values).
+                    const rawNodes = msg.heard.nodes || {};
+                    const nodes = {};
+                    for (const [pk, h] of Object.entries(rawNodes))
+                        nodes[pk] = Object.assign({}, h, { pubkey: pk });
+                    _heard = { nodes, purged: msg.heard.purged || [], total: msg.heard.total || 0 };
+                }
                 if (msg.channels  && typeof msg.channels  === 'object') _channelNames = msg.channels;
                 // F7: record the device-map delta baseline seq so the first
                 // devices_delta can validate its gap-free continuity.
@@ -3226,10 +3268,25 @@
                 }
             } else if (t === 'heard') {
                 if (msg.heard && typeof msg.heard === 'object') {
-                    _heard = msg.heard;
+                    // Slim payload: pubkey is the key, not a field in the value.
+                    // Restore it so consumers (topology, _heardList, etc.) can
+                    // continue to read h.pubkey without changes.
+                    const rawNodes = (msg.heard && msg.heard.nodes) || {};
+                    const nodes = {};
+                    for (const [pk, h] of Object.entries(rawNodes)) {
+                        nodes[pk] = Object.assign({}, h, { pubkey: pk });
+                    }
+                    _heard = {
+                        nodes,
+                        purged: (msg.heard && msg.heard.purged) || [],
+                        total:  (msg.heard && msg.heard.total)  || 0,
+                    };
+                    _updateHeardTypeBadges();
                     _renderHeardIfOpen();
-                    if (_includeHeard) _rerenderContacts();
+                    if (_includeHeard) _scheduleContactsRender();
                 }
+            } else if (t === 'heard_page') {
+                _onHeardPage(msg);
             } else if (t === 'channels') {
                 if (msg.channels && typeof msg.channels === 'object') {
                     _channelNames = msg.channels;
@@ -3243,6 +3300,9 @@
                     _rxLog = { entries: msg.entries, stats: msg.stats };
                     if (msg.known_channels && typeof msg.known_channels === 'object') {
                         _rxLog.known_channels = msg.known_channels;
+                    }
+                    if (msg.chan_hash_names && typeof msg.chan_hash_names === 'object') {
+                        _rxLog.chan_hash_names = msg.chan_hash_names;
                     }
                     _rxLogSeq = (typeof msg.seq === 'number') ? msg.seq : _rxLogSeq;
                     if (!_rxLogFirehosePaused) _renderFirehoseIfOpen();
@@ -3275,6 +3335,9 @@
                 if (msg.stats && typeof msg.stats === 'object') {
                     _rxLog.stats = msg.stats;
                 }
+                if (msg.chan_hash_names && typeof msg.chan_hash_names === 'object') {
+                    _rxLog.chan_hash_names = msg.chan_hash_names;
+                }
                 if (!_rxLogFirehosePaused) _renderFirehoseIfOpen();
                 _renderTrafficIfOpen();
                 _renderChannelsIfOpen();
@@ -3303,7 +3366,7 @@
                 const { selfName, remoteNodes } = _nodeList([]);
                 if (selfName || remoteNodes.length) {
                     _lastRemoteNodes = remoteNodes;
-                    _renderContacts(remoteNodes, _lastLiveSlotsOf);
+                    _scheduleContactsRender();
                 }
             } else {
                 // Live resolver not yet set — contacts may have arrived after an
@@ -4802,6 +4865,16 @@
         let _viewMode = (() => {
             try { const v = localStorage.getItem(LS_VIEW_MODE); return v === "list" ? "list" : "cards"; } catch (_) { return "cards"; }
         })();
+        const LS_CONTACT_SORT = "meshcore.contacts.sort";
+        // null = default grouped sort; {key, dir} = single-key sort (dir: 1 asc, -1 desc)
+        let _contactSort = (() => {
+            try {
+                const v = JSON.parse(localStorage.getItem(LS_CONTACT_SORT));
+                const validKeys = new Set(["status", "name", "type", "last", "snr", "hops"]);
+                if (v && validKeys.has(v.key) && (v.dir === 1 || v.dir === -1)) return v;
+            } catch (_) {}
+            return null;
+        })();
         const LS_INCLUDE_HEARD = "meshcore.includeHeard";
         let _includeHeard = (() => {
             try { return localStorage.getItem(LS_INCLUDE_HEARD) === "1"; } catch (_) { return false; }
@@ -4820,8 +4893,33 @@
         let _lastLiveSlotsOf = null;
         let _lastRemoteNodes = [];
 
-        // Build sorted/filtered groups for the contacts area.
-        // Returns an array of { groupLabel, contacts: [{name, slots, type, online, lastTs}] }
+        const CONTACTS_PAGE_SIZE = 150;
+        const CONTACTS_RENDER_COALESCE_MS = 3000;
+        let _contactsRenderLimit = CONTACTS_PAGE_SIZE;
+        let _contactsItems = [];       // last filtered+sorted array (full set)
+        let _contactsObserver = null;  // IntersectionObserver for cards grid only
+        let _contactsRenderTimer = null;
+        let _contactsLastRenderAt = 0;
+        let _contactsRenderSig = "";
+
+        // Virtual scroller state for list view.
+        const VLIST_OVERSCAN = 20;
+        let _vlistRowH = 26;           // measured row height in px; updated after each full render
+        let _vlistHeaderH = 0;         // cached sticky-header height; updated after each full render
+        let _vlistStart = 0;           // first rendered index (inclusive)
+        let _vlistEnd = 0;             // last rendered index (exclusive)
+        let _vlistScrollRaf = null;    // pending rAF handle for scroll handler
+        let _vlistScrollHandler = null; // bound handler reference for removal
+
+        // Build sorted/filtered contacts for the contacts area.
+        // Returns a flat sorted array of { name, slots, type, online, lastTs, favorite, snrNum, hopsNum }
+        // Strip leading non-letter/non-digit characters (emoji, symbols) so that
+        // names like "📡 NodeA" sort by the actual word, not by Unicode codepoint.
+        function _sortKeyName(n) {
+            return String(n || "").toLowerCase().replace(/^[^\p{L}\p{N}]+/u, "");
+        }
+
+        // (heard synthetic items also carry _heardPk).
         function _buildContactGroups(remoteNodes, liveSlotsOf, extraItems = []) {
             const items = remoteNodes.map(name => {
                 const slots = liveSlotsOf(name);
@@ -4837,15 +4935,19 @@
                 // present "no trustworthy time yet". last_advert is only used
                 // as a last-resort fallback when no local time exists at all.
                 let lastTs = 0;
+                let lastLocalTs = NaN;
                 if (slots.last_seen) {
                     const raw = _slotValue(slots.last_seen);
                     if (raw) {
                         const d = new Date(String(raw).replace(" ", "T"));
-                        if (!isNaN(d.getTime())) lastTs = Math.floor(d.getTime() / 1000);
+                        if (!isNaN(d.getTime())) {
+                            lastLocalTs = Math.floor(d.getTime() / 1000);
+                            lastTs = lastLocalTs;
+                        }
                     }
                 }
                 if (!lastTs) lastTs = Number(slots.last_advert) || 0;
-                return { name, slots, type, online, lastTs, favorite: _isFavorite(name) };
+                return { name, slots, type, online, lastTs, lastLocalTs, favorite: _isFavorite(name) };
             });
             // Merge heard nodes into the SAME list so they sort together with
             // real contacts (online/favorite/type/last-seen) rather than being
@@ -4866,22 +4968,63 @@
             filtered = filtered.filter(it =>
                 !(it.type in _showType) || _showType[it.type]);
 
-            // Sort:
-            //   1. online before offline
-            //   2. favorites before non-favorites (within the same online/offline group)
-            //   3. type rank: Contact(1) → Sensor(4) → Room(3) → Repeater(2) → Unknown(0)
-            //   4. newer last_advert first
-            //   5. by name
-            const TYPE_RANK = { 1: 0, 4: 1, 3: 2, 2: 3, 0: 4 };
-            filtered.sort((a, b) => {
-                if (a.online !== b.online)     return a.online ? -1 : 1;
-                if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
-                const ra = TYPE_RANK[a.type] ?? 9;
-                const rb = TYPE_RANK[b.type] ?? 9;
-                if (ra !== rb) return ra - rb;
-                if (a.lastTs !== b.lastTs) return b.lastTs - a.lastTs;
-                return a.name.localeCompare(b.name);
-            });
+            // Pre-parse numeric snr/hops once for the comparator (avoids repeated string work).
+            for (const it of filtered) {
+                it.snrNum  = it.slots.snr  ? parseFloat(String(_slotValue(it.slots.snr)).replace(/\s*dB$/i, ""))   : NaN;
+                it.hopsNum = it.slots.hops ? parseFloat(String(_slotValue(it.slots.hops)).replace(/\s*hops?$/i, "")) : NaN;
+            }
+
+            if (_contactSort) {
+                // Single-key sort with NaN-to-bottom rule and name tiebreaker.
+                const { key, dir } = _contactSort;
+                const nameCmp = (a, b) => _sortKeyName(a.name).localeCompare(_sortKeyName(b.name));
+                const nanLast = (a, b, va, vb) => {
+                    const aNaN = isNaN(va), bNaN = isNaN(vb);
+                    if (aNaN && bNaN) return nameCmp(a, b);
+                    if (aNaN) return 1;
+                    if (bNaN) return -1;
+                    const d = (va - vb) * dir;
+                    return d !== 0 ? d : nameCmp(a, b);
+                };
+                filtered.sort((a, b) => {
+                    switch (key) {
+                        case "status": {
+                            if (a.online !== b.online) return a.online ? -dir : dir;
+                            return nameCmp(a, b);
+                        }
+                        case "name":
+                            return nameCmp(a, b) * dir;
+                        case "type": {
+                            const la = TYPE_LABELS[a.type] || "";
+                            const lb = TYPE_LABELS[b.type] || "";
+                            const d = la.localeCompare(lb) * dir;
+                            return d !== 0 ? d : nameCmp(a, b);
+                        }
+                        case "last":
+                            return nanLast(a, b, a.lastLocalTs, b.lastLocalTs);
+                        case "snr":  return nanLast(a, b, a.snrNum,  b.snrNum);
+                        case "hops": return nanLast(a, b, a.hopsNum, b.hopsNum);
+                        default:     return nameCmp(a, b);
+                    }
+                });
+            } else {
+                // Default sort:
+                //   1. online before offline
+                //   2. favorites before non-favorites (within the same online/offline group)
+                //   3. type rank: Contact(1) → Sensor(4) → Room(3) → Repeater(2) → Unknown(0)
+                //   4. newer last_advert first
+                //   5. by name
+                const TYPE_RANK = { 1: 0, 4: 1, 3: 2, 2: 3, 0: 4 };
+                filtered.sort((a, b) => {
+                    if (a.online !== b.online)     return a.online ? -1 : 1;
+                    if (a.favorite !== b.favorite) return a.favorite ? -1 : 1;
+                    const ra = TYPE_RANK[a.type] ?? 9;
+                    const rb = TYPE_RANK[b.type] ?? 9;
+                    if (ra !== rb) return ra - rb;
+                    if (a.lastTs !== b.lastTs) return b.lastTs - a.lastTs;
+                    return a.name.localeCompare(b.name);
+                });
+            }
 
             return filtered;
         }
@@ -4935,17 +5078,49 @@
             const count = visibleNames.filter(n => _selectedContacts.has(n)).length;
             const headIcon = allChecked ? "fa-square-check" : (indeterminate ? "fa-square-minus" : "fa-square");
             const headCls  = allChecked ? "row-check-box checked" : (indeterminate ? "row-check-box indeterminate" : "row-check-box");
-            return `
-        <div class="contact-row-header">
-          <span class="row-check"><span id="bulk-toggle" class="${headCls}" data-checked="${allChecked ? 1 : 0}" role="checkbox" aria-checked="${allChecked}"><i class="fa-regular ${headIcon}"></i></span></span>
+
+            // Build sortable column header cells.
+            const sortCols = [
+                { key: "status", label: null },
+                { key: "name",   label: "Name" },
+                { key: "type",   label: "Type" },
+                { key: "last",   label: "Last Heard" },
+                { key: "snr",    label: "SNR" },
+                { key: "hops",   label: "Hops" },
+            ];
+            const colHtml = sortCols.map(({ key, label }) => {
+                const active = _contactSort && _contactSort.key === key;
+                const caretCls = active ? "sort-caret sort-caret-active" : "sort-caret";
+                const caretIcon = active && _contactSort.dir === -1 ? "fa-caret-down" : "fa-caret-up";
+                if (label === null) {
+                    // Status column: icon-only, no text (column is only 18px wide)
+                    const iconCls = active
+                        ? `fa-solid ${caretIcon} ${caretCls}`
+                        : "fa-solid fa-circle sort-caret";
+                    return `<span class="row-sort${active ? " row-sort-active" : ""}" data-sort="${key}" title="Sort by online status" style="overflow:hidden;font-size:0.65rem;line-height:1"><i class="${iconCls}"></i></span>`;
+                }
+                return `<span class="row-sort${active ? " row-sort-active" : ""}" data-sort="${key}">${label} <i class="fa-solid ${caretIcon} ${caretCls}"></i></span>`;
+            }).join("");
+
+            // Second header line: shown only when at least one row is selected.
+            const bulkLine = count > 0 ? `
+        <div class="contact-row-header contact-row-header-bulk">
+          <span></span>
           <span></span>
           <div class="row-bulk-actions">
-            <span class="selected-count">${count > 0 ? count + " selected" : ""}</span>
-            <button id="bulk-delete" class="danger" ${count === 0 ? "disabled" : ""}>
+            <span class="selected-count">${count} selected</span>
+            <button id="bulk-delete" class="danger">
               <i class="fa-solid fa-trash"></i> Delete selected
             </button>
           </div>
-        </div>`;
+        </div>` : "";
+
+            return `<div class="contact-list-head">
+        <div class="contact-row-header">
+          <span class="row-check"><span id="bulk-toggle" class="${headCls}" data-checked="${allChecked ? 1 : 0}" role="checkbox" aria-checked="${allChecked}"><i class="fa-regular ${headIcon}"></i></span></span>
+          ${colHtml}
+          <span></span>
+        </div>${bulkLine}</div>`;
         }
 
         // Synthesize contact-pipeline items for heard nodes so they render
@@ -4981,28 +5156,164 @@
                 return {
                     name: h.name || h.pubkey.slice(0, 12),
                     slots, type: h.type || 0, online: false,
-                    lastTs: h.last_heard || 0, favorite: false, _heardPk: h.pubkey,
+                    lastTs: h.last_heard || 0, lastLocalTs: h.last_heard || NaN, favorite: false, _heardPk: h.pubkey,
                 };
             });
         }
 
-        function _renderContacts(remoteNodes, liveSlotsOf) {
+        // Disconnect any existing sentinel observer and clear the sentinel element.
+        function _detachSentinelObserver() {
+            if (_contactsObserver) {
+                _contactsObserver.disconnect();
+                _contactsObserver = null;
+            }
+        }
+
+        // Build the sentinel element and (re-)attach the IntersectionObserver on the
+        // given CARDS GRID scroll container. Never called for list view.
+        function _attachSentinelObserver(container) {
+            _detachSentinelObserver();
+            const sentinel = container.querySelector("#contacts-sentinel");
+            if (!sentinel) return;
+            _contactsObserver = new IntersectionObserver((entries) => {
+                if (!entries[0].isIntersecting) return;
+                // Grow the window and append the next slice before the sentinel.
+                _contactsRenderLimit += CONTACTS_PAGE_SIZE;
+                const start = _contactsRenderLimit - CONTACTS_PAGE_SIZE;
+                const end   = _contactsRenderLimit;
+                const nextSlice = _contactsItems.slice(start, end);
+                if (!nextSlice.length) {
+                    sentinel.remove();
+                    _detachSentinelObserver();
+                    return;
+                }
+                const html = nextSlice.map(it => renderNode(it.name, it.slots, false)).join("");
+                sentinel.insertAdjacentHTML("beforebegin", html);
+                // Update or remove the sentinel.
+                if (_contactsRenderLimit >= _contactsItems.length) {
+                    sentinel.remove();
+                    _detachSentinelObserver();
+                } else {
+                    sentinel.textContent = `Showing ${_contactsRenderLimit} of ${_contactsItems.length} — scroll for more`;
+                }
+            }, { root: container, rootMargin: "200px" });
+            _contactsObserver.observe(sentinel);
+        }
+
+        // Detach the rAF-throttled scroll handler from #contacts-list (if any).
+        function _detachVlistScroll() {
+            const list = document.getElementById("contacts-list");
+            if (list && _vlistScrollHandler) {
+                list.removeEventListener("scroll", _vlistScrollHandler);
+            }
+            _vlistScrollHandler = null;
+            if (_vlistScrollRaf) { cancelAnimationFrame(_vlistScrollRaf); _vlistScrollRaf = null; }
+        }
+
+        // Compute the virtual window [start, end) for the list view given a scrollTop.
+        function _vlistComputeWindow(scrollTop, total, headerH) {
+            const list = document.getElementById("contacts-list");
+            const viewH = (list ? list.clientHeight : 400) - headerH;
+            const viewportRows = viewH / _vlistRowH;
+            const scrolled = Math.max(0, scrollTop - headerH);
+            const first = Math.floor(scrolled / _vlistRowH);
+            const start = Math.max(0, first - VLIST_OVERSCAN);
+            const end   = Math.min(total, first + Math.ceil(viewportRows) + VLIST_OVERSCAN);
+            return { start, end };
+        }
+
+        // Render the current virtual window into #contacts-vrows and update spacers.
+        // Does NOT touch the sticky header. Calls _reapplyComposeSelection() after.
+        // Uses the already-measured _vlistRowH — no reflow triggered here.
+        function _vlistRenderWindow() {
+            const list = document.getElementById("contacts-list");
+            const vrows   = list && list.querySelector("#contacts-vrows");
+            const vtop    = list && list.querySelector("#contacts-vtop");
+            const vbottom = list && list.querySelector("#contacts-vbottom");
+            if (!vrows || !vtop || !vbottom) return;
+
+            const total = _contactsItems.length;
+            const slice = _contactsItems.slice(_vlistStart, _vlistEnd);
+            vrows.innerHTML = slice.map(_renderListRow).join("");
+            vtop.style.height    = (_vlistStart * _vlistRowH) + "px";
+            vbottom.style.height = ((total - _vlistEnd) * _vlistRowH) + "px";
+
+            _reapplyComposeSelection();
+        }
+
+        // Attach the rAF-throttled scroll handler on #contacts-list (called once per
+        // list-view render). The handler recomputes the window on scroll and re-renders
+        // only when the window shifts by more than half the overscan (hysteresis).
+        function _attachVlistScroll() {
+            _detachVlistScroll();
+            const list = document.getElementById("contacts-list");
+            if (!list) return;
+            _vlistScrollHandler = function _onVlistScroll() {
+                if (_vlistScrollRaf) return;
+                _vlistScrollRaf = requestAnimationFrame(() => {
+                    _vlistScrollRaf = null;
+                    const headerH = (list.querySelector(".contact-list-head") || {}).offsetHeight || 0;
+                    _vlistHeaderH = headerH;
+                    const total = _contactsItems.length;
+                    const { start, end } = _vlistComputeWindow(list.scrollTop, total, headerH);
+                    // Hysteresis: only re-render when the window has shifted enough.
+                    const halfOverscan = VLIST_OVERSCAN / 2;
+                    if (Math.abs(start - _vlistStart) < halfOverscan &&
+                        Math.abs(end   - _vlistEnd)   < halfOverscan) return;
+                    _vlistStart = start;
+                    _vlistEnd   = end;
+                    _vlistRenderWindow();
+                });
+            };
+            list.addEventListener("scroll", _vlistScrollHandler, { passive: true });
+        }
+
+        function _renderContacts(remoteNodes, liveSlotsOf, opts) {
+            const fromData = opts && opts.fromData;
             const heardItems = _heardSyntheticItems();
             // Heard nodes are merged INTO the same list inside
             // _buildContactGroups so they sort together with real contacts.
             const items = _buildContactGroups(remoteNodes, liveSlotsOf, heardItems);
+            // Cache the full filtered+sorted array — the virtual scroller and
+            // cards observer both read from it.
+            _contactsItems = items;
+
+            // Build a cheap signature of the rendered window + headline counts.
+            // Used to skip DOM updates when data-driven renders change nothing visible.
+            // List mode: signature covers the current virtual window slice.
+            // Cards mode: signature covers the current paged slice.
+            const heardShownCount = items.filter(it => it._heardPk).length;
+            const sigSlice = _viewMode === "list"
+                ? items.slice(_vlistStart, _vlistEnd)
+                : items.slice(0, _contactsRenderLimit);
+            const sig = items.length + "|" + heardShownCount + "|" + _viewMode + "|" +
+                sigSlice
+                     .map(it => `${it.name}\x01${it.online ? 1 : 0}\x01${it.lastTs}\x01${
+                         _slotValue((it.slots && it.slots.snr) || {}) }\x01${ _slotValue((it.slots && it.slots.hops) || {}) }`)
+                     .join("\x02");
+
+            if (fromData && sig === _contactsRenderSig) {
+                // Window unchanged — _contactsItems is already updated above so
+                // search/select-all see fresh data, but the DOM is untouched.
+                return;
+            }
+            _contactsRenderSig = sig;
+
             const grid = document.getElementById("contacts-grid");
             const list = document.getElementById("contacts-list");
             if (!grid || !list) return;
 
-            // Update the count badge next to the "Contacts" header
+            // Disconnect any in-flight observer/scroll handler; re-attached below.
+            _detachSentinelObserver();
+            _detachVlistScroll();
+
+            // Update the count badge next to the "Contacts" header.
             const countEl = document.getElementById("contacts-count");
             if (countEl) {
                 const total = remoteNodes.length;
-                const heardShown = items.filter(it => it._heardPk).length;
-                const shown = items.length - heardShown;
+                const shown = items.length - heardShownCount;
                 let txt = shown === total ? `(${total})` : `(${shown} / ${total})`;
-                if (heardShown) txt += ` + ${heardShown} heard`;
+                if (heardShownCount) txt += ` + ${heardShownCount} heard`;
                 countEl.textContent = txt;
             }
 
@@ -5011,19 +5322,72 @@
 
             if (_viewMode === "list") {
                 grid.style.display = "none";
+                grid.innerHTML = "";
                 list.style.display = "";
                 if (empty) {
                     list.innerHTML = emptyHtml;
                 } else {
+                    // visibleNames = FULL filtered non-heard list so select-all
+                    // semantics match the entire filtered dataset, not just the window.
                     const visibleNames = items.filter(it => !it._heardPk).map(it => it.name);
-                    list.innerHTML = _renderListHeader(visibleNames) + items.map(_renderListRow).join("");
+
+                    // Preserve or reset scroll position.
+                    const savedScroll = fromData ? list.scrollTop : 0;
+
+                    if (!fromData) {
+                        _vlistStart = 0;
+                        _vlistEnd   = 0;
+                    }
+                    // Derive initial window using the cached header height from the
+                    // previous render so the window is accurate from the first paint.
+                    const win = _vlistComputeWindow(savedScroll, items.length, _vlistHeaderH);
+                    _vlistStart = win.start;
+                    _vlistEnd   = win.end;
+
+                    const winSlice = items.slice(_vlistStart, _vlistEnd);
+                    list.innerHTML =
+                        _renderListHeader(visibleNames) +
+                        `<div id="contacts-vtop" style="height:${_vlistStart * _vlistRowH}px"></div>` +
+                        `<div id="contacts-vrows">${winSlice.map(_renderListRow).join("")}</div>` +
+                        `<div id="contacts-vbottom" style="height:${(items.length - _vlistEnd) * _vlistRowH}px"></div>`;
+
+                    // Update cached header height from the just-rendered DOM.
+                    _vlistHeaderH = (list.querySelector(".contact-list-head") || {}).offsetHeight || _vlistHeaderH;
+
+                    // Re-measure row height from actual rendered rows.
+                    const vrows = list.querySelector("#contacts-vrows");
+                    if (vrows && winSlice.length > 0 && vrows.scrollHeight > 0) {
+                        _vlistRowH = Math.max(1, vrows.scrollHeight / winSlice.length);
+                        // Re-apply spacer heights with measured row height.
+                        const vtop    = list.querySelector("#contacts-vtop");
+                        const vbottom = list.querySelector("#contacts-vbottom");
+                        if (vtop)    vtop.style.height    = (_vlistStart * _vlistRowH) + "px";
+                        if (vbottom) vbottom.style.height = ((items.length - _vlistEnd) * _vlistRowH) + "px";
+                    }
+
+                    // Restore scroll position after spacers are final so the browser
+                    // does not clamp it against a too-small content height.
+                    if (fromData && savedScroll) list.scrollTop = savedScroll;
+
+                    _attachVlistScroll();
+                    _reapplyComposeSelection();
                 }
             } else {
                 list.style.display = "none";
+                list.innerHTML = "";
                 grid.style.display = "";
-                grid.innerHTML = empty ? emptyHtml : items.map(it => renderNode(it.name, it.slots, false)).join("");
+                const pageItems = items.slice(0, _contactsRenderLimit);
+                const hasMore = items.length > _contactsRenderLimit;
+                const sentinelHtml = hasMore
+                    ? `<div id="contacts-sentinel" class="contacts-sentinel">Showing ${_contactsRenderLimit} of ${items.length} — scroll for more</div>`
+                    : "";
+                const savedScroll = fromData ? grid.scrollTop : 0;
+                grid.innerHTML = empty ? emptyHtml
+                    : pageItems.map(it => renderNode(it.name, it.slots, false)).join("") + sentinelHtml;
+                if (fromData && savedScroll) grid.scrollTop = savedScroll;
+                if (hasMore) _attachSentinelObserver(grid);
+                _reapplyComposeSelection();
             }
-            _reapplyComposeSelection();
         }
 
         function _reapplyComposeSelection() {
@@ -5195,6 +5559,35 @@
         // Uses event delegation so it survives re-renders.
         function _initContactClickToCompose() {
             const handler = (ev) => {
+                // Sortable column header click
+                const sortEl = ev.target.closest(".row-sort");
+                if (sortEl) {
+                    ev.stopPropagation();
+                    const key = sortEl.dataset.sort;
+                    if (key) {
+                        // Natural first-click direction per column:
+                        //   status → online first (dir=1); name/type → A→Z (dir=1);
+                        //   last → newest first (dir=-1); snr → highest first (dir=-1);
+                        //   hops → lowest first (dir=1).
+                        const NATURAL_DIR = { status: 1, name: 1, type: 1, last: -1, snr: -1, hops: 1 };
+                        const nat = NATURAL_DIR[key] ?? 1;
+                        const inv = -nat;
+                        if (!_contactSort || _contactSort.key !== key) {
+                            _contactSort = { key, dir: nat };
+                        } else if (_contactSort.dir === nat) {
+                            _contactSort = { key, dir: inv };
+                        } else {
+                            _contactSort = null;
+                        }
+                        try {
+                            if (_contactSort) localStorage.setItem(LS_CONTACT_SORT, JSON.stringify(_contactSort));
+                            else localStorage.removeItem(LS_CONTACT_SORT);
+                        } catch (_) {}
+                        _resetContactsWindow();
+                        _rerenderContacts();
+                    }
+                    return;
+                }
                 // Bulk-delete button
                 if (ev.target.closest("#bulk-delete")) {
                     ev.stopPropagation();
@@ -5304,6 +5697,7 @@
                 nameInput.addEventListener("input", (e) => {
                     _filterName = e.target.value;
                     _selectedContacts.clear();   // changing the filter resets the bulk selection
+                    _resetContactsWindow();
                     _rerenderContacts();
                 });
             }
@@ -5316,6 +5710,7 @@
                     _viewMode = "cards";
                     try { localStorage.setItem(LS_VIEW_MODE, "cards"); } catch (_) {}
                     btnCards.classList.add("active"); btnList.classList.remove("active");
+                    _resetContactsWindow();
                     _rerenderContacts();
                 });
             }
@@ -5325,6 +5720,7 @@
                     _viewMode = "list";
                     try { localStorage.setItem(LS_VIEW_MODE, "list"); } catch (_) {}
                     btnList.classList.add("active"); btnCards.classList.remove("active");
+                    _resetContactsWindow();
                     _rerenderContacts();
                 });
             }
@@ -5337,6 +5733,7 @@
                     _showType[t] = !_showType[t];
                     try { localStorage.setItem(LS_SHOW_TYPE[t], _showType[t] ? "1" : "0"); } catch (_) {}
                     b.classList.toggle("active", _showType[t]);
+                    _resetContactsWindow();
                     _rerenderContacts();
                 });
             }
@@ -5348,22 +5745,46 @@
                     _includeHeard = !_includeHeard;
                     try { localStorage.setItem(LS_INCLUDE_HEARD, _includeHeard ? "1" : "0"); } catch (_) {}
                     btnHeard.classList.toggle("active", _includeHeard);
+                    _resetContactsWindow();
                     _rerenderContacts();
                 });
             }
         }
 
+        function _resetContactsWindow() {
+            _contactsRenderLimit = CONTACTS_PAGE_SIZE;
+            const c = document.getElementById(_viewMode === "list" ? "contacts-list" : "contacts-grid");
+            if (c) c.scrollTop = 0;
+            if (_viewMode === "list") {
+                _vlistStart = 0;
+                _vlistEnd   = 0;
+            }
+        }
+
+        function _scheduleContactsRender() {
+            if (_contactsRenderTimer) return;
+            const elapsed = Date.now() - _contactsLastRenderAt;
+            const delay = Math.max(0, CONTACTS_RENDER_COALESCE_MS - elapsed);
+            _contactsRenderTimer = setTimeout(() => {
+                _contactsRenderTimer = null;
+                _contactsLastRenderAt = Date.now();
+                _rerenderContacts({ fromData: true });
+            }, delay);
+        }
+
         // Rerender contacts using the last live-resolver from loadData() if we have one,
         // otherwise fall back to the JSON snapshot.
-        function _rerenderContacts() {
+        function _rerenderContacts(opts) {
+            // User-driven renders supersede any queued data render.
+            if (!opts || !opts.fromData) { if (_contactsRenderTimer) { clearTimeout(_contactsRenderTimer); _contactsRenderTimer = null; } }
             if (_lastLiveSlotsOf && _lastRemoteNodes.length) {
-                _renderContacts(_lastRemoteNodes, _lastLiveSlotsOf);
+                _renderContacts(_lastRemoteNodes, _lastLiveSlotsOf, opts);
                 return;
             }
             if (!_deviceMap || !_deviceMap.nodes) return;
             const { selfName } = _nodeList([]);
             const remoteNodes = Object.keys(_deviceMap.nodes).filter(n => n !== selfName);
-            _renderContacts(remoteNodes, (n) => (_deviceMap.nodes && _deviceMap.nodes[n]) || {});
+            _renderContacts(remoteNodes, (n) => (_deviceMap.nodes && _deviceMap.nodes[n]) || {}, opts);
         }
 
         // Re-apply active highlights on all settings buttons based on the current device map.
@@ -5521,17 +5942,20 @@
             // the raw hash; the all-FF/CC wildcard is labelled as such.
             let pathRow = null;
             if (msgObj.path) {
-                const hopLen = (phm || 2) * 2;                 // hex chars per hop
+                // Default to 1-byte path hashes (2 hex chars per hop) — the
+                // most common MeshCore network setting.  Use device_info only
+                // when explicitly set.
+                const hopLen = (phm || 1) * 2;
                 const raw = String(msgObj.path).toLowerCase();
-                const hops = [];
+                const hopLabels = [];
                 for (let i = 0; i + hopLen <= raw.length; i += hopLen) {
                     const tok = raw.slice(i, i + hopLen);
-                    const nm = _resolvePathHop(tok);   // shared resolver (incl. heard nodes)
-                    if (nm) hops.push(`${nm} (${tok})`);
-                    else if (/^(ff)+$/.test(tok) || /^(cc)+$/.test(tok)) hops.push(`flood (${tok})`);
-                    else hops.push(tok);
+                    const nm = _resolvePathHop(tok);
+                    if (nm) hopLabels.push(nm);
+                    else if (/^(ff)+$/.test(tok) || /^(cc)+$/.test(tok)) hopLabels.push(`flood`);
+                    else hopLabels.push(tok);
                 }
-                if (hops.length) pathRow = ["Repeater path", hops.join("  →  "), "text"];
+                if (hopLabels.length) pathRow = ["Path", hopLabels.join(" → "), "text"];
             }
 
             const rows = [
@@ -5540,9 +5964,9 @@
                 ["Channel",   msgObj.channel || "—", "text"],
                 ["Sender",    msgObj.sender || "—", "text"],
                 ...(msgObj.hops != null ? [["Hops", `${msgObj.hops} hop(s)`, ""]] : []),
+                ...(pathRow ? [pathRow] : []),
                 ...(msgObj.snr  != null ? [["SNR",  `${msgObj.snr} dB`, ""]] : []),
                 ...(msgObj.rssi != null ? [["RSSI", `${msgObj.rssi} dBm`, ""]] : []),
-                ...(pathRow ? [pathRow] : []),
                 ["Text",      msgObj.text || "", "text"],
                 ["Char count",`${chars} characters`, ""],
                 ["Path hash size", phm ? `${phm}-byte (node config)` : "—", ""],
@@ -6112,10 +6536,11 @@
             const view = document.getElementById("channels-view");
             if (!view) return;
             const counts = (_rxLog.stats && _rxLog.stats.chan_hash_counts) || {};
-            // Try to build a hash → channel-name map from recent entries
-            // (the firmware tags each GRP_TXT entry with chan_name when we
-            // have its key, which lets us resolve hashes to readable names).
-            const hashToName = {};
+            // Hash → channel-name resolution: seed from the plugin's persisted
+            // chan_hash_names map (covers configured channels even right after
+            // a restart, when the entries buffer is still empty), then let
+            // names seen on live GRP_TXT entries override.
+            const hashToName = Object.assign({}, _rxLog.chan_hash_names || {});
             for (const e of (_rxLog.entries || [])) {
                 if (e.chan_hash && e.chan_name) hashToName[e.chan_hash] = e.chan_name;
             }
@@ -6257,6 +6682,19 @@
         let _heardMapPk = null;        // pubkey currently shown on the map
         let _contactMap = null;        // Leaflet instance for the contact panel
 
+        // Pagination state for the heard panel (server-side, infinite scroll).
+        let _heardPageRows          = [];    // accumulated rows from all loaded pages
+        let _heardPageHasMore       = false;
+        let _heardPageOffset        = 0;     // offset cursor for next page
+        let _heardPageLoading       = false;
+        let _heardPageTotal         = 0;
+        let _heardQuerySeq          = 0;     // discard stale responses
+        let _heardScrollObs         = null;  // IntersectionObserver for sentinel
+        let _heardTypeFilter        = null;  // null = all, 1/2/3/4 = single type
+        let _heardSearch            = "";
+        let _heardSortBy            = "recent";
+        let _heardListRenderedCount = 0;     // append-only render cursor
+
         // Per-type counts of heard (non-contact) nodes, ignoring the active
         // type filter — so the toggle badges show how many exist of each.
         function _heardTypeCounts() {
@@ -6283,30 +6721,183 @@
                 .sort((a, b) => (b.last_heard || 0) - (a.last_heard || 0));
         }
 
+        function _heardPanelQueryFirst() {
+            _heardPageRows          = [];
+            _heardPageHasMore       = false;
+            _heardPageOffset        = 0;
+            _heardPageLoading       = false;
+            _heardListRenderedCount = 0;
+            _heardPanelQueryMore();
+        }
+
+        function _heardPanelQueryMore() {
+            if (_heardPageLoading) return;
+            if (_heardPageRows.length > 0 && !_heardPageHasMore) return;
+            _heardPageLoading = true;
+            const id = ++_heardQuerySeq;
+            const cmd = { t: 'heard_query', id, limit: 100, offset: _heardPageOffset };
+            if (_heardTypeFilter != null) cmd.type_filter = _heardTypeFilter;
+            if (_heardSearch)             cmd.search = _heardSearch;
+            if (_heardSortBy !== "recent") cmd.sort_by = _heardSortBy;
+            if (_pluginWS) _pluginWS.sendPluginCommand(cmd);
+        }
+
+        function _onHeardPage(msg) {
+            if (msg.id !== _heardQuerySeq) return; // stale response
+            _heardPageLoading = false;
+            _heardPageHasMore = !!msg.has_more;
+            _heardPageOffset  = (msg.offset || 0) + (msg.rows || []).length;
+            _heardPageTotal   = msg.total || 0;
+            // Filter out nodes that have become contacts since the query ran.
+            const knownPks = new Set();
+            for (const n of Object.values((_deviceMap && _deviceMap.nodes) || {}))
+                if (n.pubkey) knownPks.add(n.pubkey);
+            const newRows = (msg.rows || []).filter(h => h.pubkey && !knownPks.has(h.pubkey));
+            _heardPageRows = [..._heardPageRows, ...newRows];
+            _renderHeardPageList();
+        }
+
+        function _updateHeardTypeBadges() {
+            const view = document.getElementById("heard-view");
+            if (!view) return;
+            const _htc = _heardTypeCounts();
+            view.querySelectorAll(".heard-type-btn").forEach(b => {
+                const span = b.querySelector(".htc");
+                if (span) span.textContent = _htc[b.dataset.htype] || 0;
+            });
+        }
+
+        function _heardRowHtml(h) {
+            const pk  = h.pubkey;
+            const t   = h.last_heard ? new Date(h.last_heard * 1000).toLocaleString() : "?";
+            const sig = `${h.snr ?? "?"}/${h.rssi ?? "?"}`;
+            const kind = _HEARD_ADV_TYPE[h.type] || "?";
+            const hops = (h.path_len !== undefined && h.path_len >= 0) ? `${h.path_len}h` : "?";
+            let skewWrong = false, skewTip = "";
+            if (h.node_ts && h.last_heard
+                && Math.abs(h.node_ts - h.last_heard) > CLOCK_WRONG_TOLERANCE_S) {
+                skewWrong = true;
+                skewTip = `Node clock looks wrong (off by >1h).\n`
+                        + `Received: ${new Date(h.last_heard * 1000).toLocaleString()}\n`
+                        + `Node reported: ${new Date(h.node_ts * 1000).toLocaleString()}`;
+            }
+            const hasLoc = !!(h.lat || h.lon);
+            const gpsBtn = hasLoc
+                ? `<button class="heard-act gps" data-pk="${escHtml(pk)}" title="Show on map (${h.lat}, ${h.lon})"><i class="fa-solid fa-location-dot"></i></button>`
+                : "";
+            return `<div class="heard-row">
+                <div class="heard-row-top">
+                    <div class="heard-name">${escHtml(h.name || "(unnamed)")}</div>
+                    <div class="heard-acts">
+                        ${gpsBtn}
+                        <button class="heard-act add" data-pk="${escHtml(pk)}" data-name="${escHtml(h.name || "")}" title="Add to contacts"><i class="fa-solid fa-user-plus"></i></button>
+                        <button class="heard-act del" data-pk="${escHtml(pk)}" title="Delete from heard list"><i class="fa-solid fa-trash"></i></button>
+                    </div>
+                </div>
+                <div class="heard-meta">
+                    <span class="heard-chip">${escHtml(kind)}</span>
+                    <span class="heard-chip">${hops}</span>
+                    <span class="heard-chip">${escHtml(sig)} dB/dBm</span>
+                    <span class="heard-chip" title="Adverts received">${(h.count || 0)}&times;</span>
+                </div>
+                <div class="heard-pk" title="${escHtml(pk)}">${escHtml(pk)}</div>
+                <div class="heard-extra"><span title="Last heard at">${escHtml(t)}</span>${skewWrong ? `<i class="fa-solid fa-triangle-exclamation clock-warn" title="${escHtml(skewTip).replace(/\n/g, "&#10;")}"></i>` : ""}</div>
+            </div>`;
+        }
+
+        function _bindHeardRow(rowEl, h) {
+            const pk = h.pubkey;
+            const addBtn = rowEl.querySelector('.heard-act.add');
+            const delBtn = rowEl.querySelector('.heard-act.del');
+            const gpsBtn = rowEl.querySelector('.heard-act.gps');
+            if (addBtn) addBtn.onclick = () => _heardAdd(pk, h.name || '');
+            if (delBtn) delBtn.onclick = () => _heardDelete(pk);
+            if (gpsBtn) gpsBtn.onclick = () => _heardToggleMap(pk);
+        }
+
+        function _renderHeardPageList() {
+            const listWrap = document.getElementById('heard-list-wrap');
+            if (!listWrap) return;
+
+            if (_heardScrollObs) { _heardScrollObs.disconnect(); _heardScrollObs = null; }
+
+            const isFirstPage = _heardListRenderedCount === 0;
+            if (isFirstPage) {
+                listWrap.innerHTML = '';
+                if (!_heardPageRows.length && !_heardPageLoading) {
+                    listWrap.innerHTML = '<div style="color:var(--text);opacity:.7;padding-top:10px">Nothing heard yet — wait for repeaters to beacon.</div>';
+                    return;
+                }
+                const itemsDiv = document.createElement('div');
+                itemsDiv.className = 'heard-list';
+                itemsDiv.id = 'heard-items';
+                listWrap.appendChild(itemsDiv);
+                const statusDiv = document.createElement('div');
+                statusDiv.id = 'heard-page-status';
+                listWrap.appendChild(statusDiv);
+            }
+
+            const itemsDiv = document.getElementById('heard-items');
+            const statusDiv = document.getElementById('heard-page-status');
+            if (!itemsDiv) return;
+
+            // Append only new rows (append-only).
+            const newRows = _heardPageRows.slice(_heardListRenderedCount);
+            for (const h of newRows) {
+                const el = document.createElement('div');
+                el.innerHTML = _heardRowHtml(h);
+                const row = el.firstElementChild;
+                _bindHeardRow(row, h);
+                itemsDiv.appendChild(row);
+            }
+            _heardListRenderedCount = _heardPageRows.length;
+
+            // Update sentinel / footer.
+            if (statusDiv) {
+                if (_heardPageHasMore) {
+                    statusDiv.innerHTML = '<div id="heard-sentinel" style="height:4px"></div>';
+                    const sentinel = document.getElementById('heard-sentinel');
+                    if (sentinel) {
+                        _heardScrollObs = new IntersectionObserver(entries => {
+                            if (entries[0].isIntersecting) _heardPanelQueryMore();
+                        }, { root: null, rootMargin: '200px', threshold: 0 });
+                        _heardScrollObs.observe(sentinel);
+                    }
+                } else if (_heardPageRows.length > 0) {
+                    const shown = _heardPageRows.length;
+                    statusDiv.innerHTML = `<div style="text-align:center;padding:8px 0;font-size:0.72rem;color:var(--muted)">${_heardPageTotal.toLocaleString()} total · showing ${shown.toLocaleString()}</div>`;
+                }
+            }
+
+            _updateHeardTypeBadges();
+        }
+
         function _renderHeardIfOpen() {
             if (!_isOpen("heard")) return;
             const view = document.getElementById("heard-view");
             if (!view) return;
 
-            // Build the shell ONCE per panel open. The 3 s refresh only
-            // rewrites #heard-list-wrap — the #heard-map element is left
-            // untouched so its Leaflet instance stays bound to a live DOM
+            // Build the shell ONCE per panel open.  The #heard-map element is
+            // left untouched so its Leaflet instance stays bound to a live DOM
             // node (rebuilding it every tick made the map flash and die).
             let listWrap = document.getElementById("heard-list-wrap");
             if (!listWrap) {
                 // Fresh shell — any prior Leaflet instance is now orphaned.
                 if (_heardMap) { try { _heardMap.remove(); } catch (_) {} _liveMaps.delete(_heardMap); _heardMap = null; }
                 view.innerHTML = `
-                    <div style="font-size:0.82rem;color:var(--text);opacity:0.85;line-height:1.5">
-                        Nodes heard over the air whose pubkey isn't in your
-                        contacts. This list is persistent. Use
-                        <i class="fa-solid fa-user-plus"></i> to add a node to
-                        your contacts, <i class="fa-solid fa-trash"></i> to drop
-                        it from this list, or
-                        <i class="fa-solid fa-location-dot"></i> to show its
-                        position on the map below.
+                    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+                        <input id="heard-search" type="search" placeholder="Search name…"
+                            style="font-size:0.75rem;padding:4px 10px;border-radius:20px;border:1px solid var(--border);background:var(--surface);color:var(--text);outline:none;flex:1 1 auto;min-width:0"
+                            autocomplete="off" spellcheck="false">
+                        <select id="heard-sort-sel" title="Sort order"
+                            style="font-size:0.72rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:3px 6px;flex:0 0 auto">
+                            <option value="recent">Heard Recently</option>
+                            <option value="least_hops">Least Hops</option>
+                            <option value="max_hops">Max Hops</option>
+                            <option value="times_heard">Times Heard</option>
+                        </select>
                     </div>
-                    <div id="heard-purge-bar" style="display:flex;align-items:center;gap:6px;margin:8px 0 2px;flex-wrap:nowrap">
+                    <div id="heard-purge-bar" style="display:flex;align-items:center;gap:6px;margin:4px 0 2px;flex-wrap:nowrap">
                         <span style="font-size:0.72rem;color:var(--muted);white-space:nowrap">Purge:</span>
                         <select id="heard-purge-sel" style="font-size:0.72rem;background:var(--surface);color:var(--text);border:1px solid var(--border);border-radius:4px;padding:2px 6px;min-width:0;flex:1 1 auto">
                             <optgroup label="Older than">
@@ -6334,78 +6925,66 @@
                 listWrap = document.getElementById("heard-list-wrap");
                 view.querySelectorAll(".heard-type-btn").forEach(b => {
                     b.onclick = () => {
-                        const t = b.dataset.htype;
+                        const t = +b.dataset.htype;
                         _heardShowType[t] = !_heardShowType[t];
                         try { localStorage.setItem(LS_HEARD_TYPE[t], _heardShowType[t] ? "1" : "0"); } catch (_) {}
                         b.classList.toggle("active", _heardShowType[t]);
-                        _renderHeardIfOpen();
+                        // Map multi-select to single server-side type filter:
+                        // null = all, or the one enabled type if exactly one is on.
+                        const activeTypes = [1,2,3,4].filter(x => _heardShowType[x]);
+                        _heardTypeFilter = activeTypes.length === 1 ? activeTypes[0] : null;
+                        _heardPanelQueryFirst();
                     };
                 });
                 const purgeBtn = document.getElementById("heard-purge-btn");
                 if (purgeBtn) purgeBtn.onclick = _heardPurgeRun;
+
+                // Search input — debounced, server-side.
+                let _heardSearchTimer = null;
+                const searchEl = document.getElementById("heard-search");
+                if (searchEl) {
+                    searchEl.value = _heardSearch;
+                    searchEl.addEventListener("input", () => {
+                        clearTimeout(_heardSearchTimer);
+                        _heardSearchTimer = setTimeout(() => {
+                            const v = searchEl.value.trim();
+                            if (v === _heardSearch) return;
+                            _heardSearch = v;
+                            _heardPanelQueryFirst();
+                        }, 300);
+                    });
+                    searchEl.addEventListener("search", () => {
+                        // Fires when the × clear button is clicked on type="search".
+                        clearTimeout(_heardSearchTimer);
+                        if ("" !== _heardSearch) { _heardSearch = ""; _heardPanelQueryFirst(); }
+                    });
+                    searchEl.addEventListener("focus", () => {
+                        searchEl.style.borderColor = "var(--accent)";
+                    });
+                    searchEl.addEventListener("blur", () => {
+                        searchEl.style.borderColor = "";
+                    });
+                }
+
+                // Sort dropdown — immediate, server-side.
+                const sortSel = document.getElementById("heard-sort-sel");
+                if (sortSel) {
+                    sortSel.value = _heardSortBy;
+                    sortSel.addEventListener("change", () => {
+                        _heardSortBy = sortSel.value;
+                        _heardPanelQueryFirst();
+                    });
+                }
+
+                // Kick off the first page load for this panel open.
+                _heardPanelQueryFirst();
             }
 
-            // Refresh the per-type count badges every render.
-            const _htc = _heardTypeCounts();
-            view.querySelectorAll(".heard-type-btn").forEach(b => {
-                const span = b.querySelector(".htc");
-                if (span) span.textContent = _htc[b.dataset.htype] || 0;
-            });
+            // Refresh the per-type count badges (driven from slim _heard.nodes).
+            _updateHeardTypeBadges();
 
-            const list = _heardList();
-            if (!list.length) {
-                listWrap.innerHTML = `<div style="color:var(--text);opacity:.7;padding-top:10px">
-                    Nothing heard yet — wait for repeaters to beacon.</div>`;
-            } else {
-                listWrap.innerHTML = `<div class="heard-list">` + list.map(h => {
-                    const pk   = h.pubkey;
-                    const t    = h.last_heard ? new Date(h.last_heard * 1000).toLocaleString() : "?";
-                    const sig  = `${h.snr ?? "?"}/${h.rssi ?? "?"}`;
-                    const kind = _HEARD_ADV_TYPE[h.type] || "?";
-                    const hops = (h.path_len !== undefined && h.path_len >= 0) ? `${h.path_len}h` : "?";
-                    let skewWrong = false, skewTip = "";
-                    if (h.node_ts && h.last_heard
-                        && Math.abs(h.node_ts - h.last_heard) > CLOCK_WRONG_TOLERANCE_S) {
-                        skewWrong = true;
-                        skewTip = `Node clock looks wrong (off by >1h).\n`
-                                + `Received: ${new Date(h.last_heard * 1000).toLocaleString()}\n`
-                                + `Node reported: ${new Date(h.node_ts * 1000).toLocaleString()}`;
-                    }
-                    const hasLoc = !!(h.lat || h.lon);
-                    const gpsBtn = hasLoc
-                        ? `<button class="heard-act gps" data-pk="${escHtml(pk)}" title="Show on map (${h.lat}, ${h.lon})"><i class="fa-solid fa-location-dot"></i></button>`
-                        : "";
-                    return `<div class="heard-row">
-                        <div class="heard-row-top">
-                            <div class="heard-name">${escHtml(h.name || "(unnamed)")}</div>
-                            <div class="heard-acts">
-                                ${gpsBtn}
-                                <button class="heard-act add" data-pk="${escHtml(pk)}" data-name="${escHtml(h.name || "")}" title="Add to contacts"><i class="fa-solid fa-user-plus"></i></button>
-                                <button class="heard-act del" data-pk="${escHtml(pk)}" title="Delete from heard list"><i class="fa-solid fa-trash"></i></button>
-                            </div>
-                        </div>
-                        <div class="heard-meta">
-                            <span class="heard-chip">${escHtml(kind)}</span>
-                            <span class="heard-chip">${hops}</span>
-                            <span class="heard-chip">${escHtml(sig)} dB/dBm</span>
-                            <span class="heard-chip" title="Adverts received from this node">${(h.count || 0)}&times;</span>
-                        </div>
-                        <div class="heard-pk" title="${escHtml(pk)}">${escHtml(pk)}</div>
-                        <div class="heard-extra"><span title="Last heard at">${escHtml(t)}</span>${skewWrong ? `<i class="fa-solid fa-triangle-exclamation clock-warn" title="${escHtml(skewTip).replace(/\n/g, "&#10;")}"></i>` : ""}</div>
-                    </div>`;
-                }).join("") + `</div>`;
-
-                listWrap.querySelectorAll(".heard-act.add").forEach(b =>
-                    b.onclick = () => _heardAdd(b.dataset.pk, b.dataset.name));
-                listWrap.querySelectorAll(".heard-act.del").forEach(b =>
-                    b.onclick = () => _heardDelete(b.dataset.pk));
-                listWrap.querySelectorAll(".heard-act.gps").forEach(b =>
-                    b.onclick = () => _heardToggleMap(b.dataset.pk));
-            }
-
-            // Keep an open map visible if its node is still present.
-            // force=false → don't reset the user's zoom/pan on refresh.
-            if (_heardMapPk && list.some(h => h.pubkey === _heardMapPk)) {
+            // Keep an open map visible if its node is still in the loaded pages.
+            if (_heardMapPk && _heardPageRows.some(h => h.pubkey === _heardMapPk)) {
                 _heardShowMap(_heardMapPk, false);
             } else if (_heardMapPk) {
                 _heardMapPk = null;
@@ -6419,7 +6998,9 @@
             // Optimistic: drop locally so it disappears immediately.
             if (_heard.nodes) delete _heard.nodes[pk];
             if (_heardMapPk === pk) _heardToggleMap(pk);
-            _renderHeardIfOpen();
+            _heardPageRows = _heardPageRows.filter(r => r.pubkey !== pk);
+            _heardListRenderedCount = 0;
+            _renderHeardPageList();
             if (_includeHeard) _rerenderContacts();
             await _sendDeviceCmd(`!heard_add ${pk}`);
             // The plugin will push t:'devices' and t:'heard' shortly; the reducer
@@ -6468,11 +7049,14 @@
                 `Future broadcasts from these nodes will be ignored until they're heard again.\n\n` +
                 `Continue?`
             )) return;
+            const victimPks = new Set(victims.map(v => v.pubkey));
             for (const v of victims) {
                 if (_heard.nodes) delete _heard.nodes[v.pubkey];
                 if (_heardMapPk === v.pubkey) _heardToggleMap(v.pubkey);
             }
-            _renderHeardIfOpen();
+            _heardPageRows = _heardPageRows.filter(r => !victimPks.has(r.pubkey));
+            _heardListRenderedCount = 0;
+            _renderHeardPageList();
             if (_includeHeard) _rerenderContacts();
             await _pluginWS.sendCmdAndWait(cmd);
         }
@@ -6484,7 +7068,9 @@
             // Optimistic update: remove locally so the row vanishes immediately.
             if (_heard.nodes) delete _heard.nodes[pk];
             if (_heardMapPk === pk) _heardToggleMap(pk);
-            _renderHeardIfOpen();
+            _heardPageRows = _heardPageRows.filter(r => r.pubkey !== pk);
+            _heardListRenderedCount = 0;
+            _renderHeardPageList();
             if (_includeHeard) _rerenderContacts();
             await _pluginWS.sendCmdAndWait(`!forget_heard ${pk}`);
         }
@@ -7780,7 +8366,7 @@ onmessage=function(ev){
 
         // Build a name→{lat,lon} index from all available coordinate sources so
         // rxlog src/from fields (which may be a node name, pubkey prefix, or
-        // 1-byte path hash) can be resolved to a map position.
+        // path hash token) can be resolved to a map position.
         function _buildNodeCoordIndex() {
             const idx = {};
             const nodes = (_deviceMap && _deviceMap.nodes) || {};
@@ -7845,7 +8431,7 @@ onmessage=function(ev){
                 const src = entry.src || entry.from || entry.adv_name;
                 if (!src) continue;
                 let xy = coordIdx[src] || coordIdx[String(src).toLowerCase()];
-                // Fallback: try resolving as a 1-byte path hash
+                // Fallback: try resolving as a path hash token
                 if (!xy) {
                     const resolved = _resolvePathHop(src);
                     if (resolved) xy = coordIdx[resolved];
@@ -11453,7 +12039,7 @@ Larger = more reliable routing but smaller mesh diameter.">Path hash size</label
                 if (_analyticsRssiChart) { try { _analyticsRssiChart.destroy(); } catch (_) {} _analyticsRssiChart = null; }
                 return;
             }
-            const series = _analyticsCapSeries(data.series);
+            const series = _analyticsCapSeries(data.series, data.names);
             if (_analyticsRssiChart && _analyticsRssiChart.series &&
                 _analyticsRssiChart.series.length === series.length &&
                 _analyticsRssiChart.series.every((s, i) => s.name === series[i].name)) {
@@ -11484,7 +12070,7 @@ Larger = more reliable routing but smaller mesh diameter.">Path hash size</label
                 if (_analyticsSnrChart) { try { _analyticsSnrChart.destroy(); } catch (_) {} _analyticsSnrChart = null; }
                 return;
             }
-            const series = _analyticsCapSeries(data.series);
+            const series = _analyticsCapSeries(data.series, data.names);
             if (_analyticsSnrChart && _analyticsSnrChart.series &&
                 _analyticsSnrChart.series.length === series.length &&
                 _analyticsSnrChart.series.every((s, i) => s.name === series[i].name)) {
@@ -11502,39 +12088,61 @@ Larger = more reliable routing but smaller mesh diameter.">Path hash size</label
         }
 
         // Resolve a raw node_key (12-hex pubkey prefix, or "self", or
-        // "unknown") to a human-readable contact name using the live
-        // _deviceMap. Falls back to the key itself when no match is
-        // found (e.g. a node that left the contact list since the
-        // analytics samples were stored). "self" maps to the connected
-        // node's name when known.
-        function _analyticsResolveNodeKey(key) {
+        // "unknown") to a human-readable contact name.  Resolution order:
+        //   1. nameMap (server-provided at query time — includes historic nodes)
+        //   2. current _deviceMap contacts (pubkey prefix match)
+        //   3. _heard nodes (nodes heard but not in contacts)
+        //   4. fallback: the raw key itself
+        function _analyticsResolveNodeKey(key, nameMap) {
             if (!key) return key;
+            if (nameMap && nameMap[key]) return nameMap[key];
             if (key === 'self') {
                 const sn = (_deviceMap && _deviceMap.self && _deviceMap.self.name);
                 return sn || 'self';
             }
             if (key === 'unknown') return 'unknown';
             const nodes = (_deviceMap && _deviceMap.nodes) || {};
-            // Exact pubkey-prefix match: each contact's full pubkey starts
-            // with its node_key, but the backend stores the 12-hex prefix.
-            // Walk contacts and compare prefixes — cheap enough for the
-            // contact-list sizes we care about (low hundreds max).
             for (const [name, n] of Object.entries(nodes)) {
                 const pk = n && n.pubkey;
                 if (pk && typeof pk === 'string' && pk.startsWith(key)) return name;
             }
+            // Also search heard nodes (not in contacts but have a pubkey + name).
+            const hn = (_heard && _heard.nodes) || {};
+            for (const [pk, h] of Object.entries(hn)) {
+                if (pk.startsWith(key) && h && h.name) return h.name;
+            }
             return key;
         }
 
+        // Resolve a relay path token (2/4/6 hex chars = 1/2/3-byte path
+        // hash) to a contact name by matching it against the start of each
+        // known node's pubkey prefix.
+        function _resolveRelayHex(hex) {
+            const want = (hex || '').toLowerCase();
+            if (want.length < 2 || want.length % 2 !== 0) return null;
+            const nodes = (_deviceMap && _deviceMap.nodes) || {};
+            for (const [name, n] of Object.entries(nodes)) {
+                const pk = n && (n.pubkey_prefix || n.pubkey);
+                if (pk && pk.toLowerCase().startsWith(want)) return name;
+            }
+            const hn = (_heard && _heard.nodes) || {};
+            for (const [pk, h] of Object.entries(hn)) {
+                if (pk.toLowerCase().startsWith(want) && h && h.name) return h.name;
+            }
+            return null;
+        }
+
         // Cap series to top-8 by sample count; collapse the rest into "Other" (averaged).
-        function _analyticsCapSeries(rawSeries) {
+        // nameMap: optional server-provided {node_key: display_name} for historic nodes.
+        function _analyticsCapSeries(rawSeries, nameMap) {
+            nameMap = nameMap || {};
             const MAX = 8;
             // Resolve each series' raw node_key to a display name BEFORE
             // capping so the legend, palette and dedupe all key on the
             // human-readable label.
             const named = rawSeries.map(s => {
                 const rawKey = s.node || s.name || '';
-                const displayName = _analyticsResolveNodeKey(rawKey);
+                const displayName = _analyticsResolveNodeKey(rawKey, nameMap);
                 return Object.assign({}, s, { _rawKey: rawKey, _displayName: displayName });
             });
             if (named.length <= MAX) {
@@ -12052,7 +12660,7 @@ Larger = more reliable routing but smaller mesh diameter.">Path hash size</label
             const tbody = document.createElement('tbody');
             for (const row of rows) {
                 const hex = String(row.hex || row.hex_key || '??');
-                const name = row.name || null;
+                const name = row.name || _resolveRelayHex(hex) || null;
                 const count = (row.count || 0).toLocaleString();
 
                 const tr = document.createElement('tr');
@@ -12089,7 +12697,8 @@ Larger = more reliable routing but smaller mesh diameter.">Path hash size</label
             // Title bar above the table wrapper.
             const titleBar = document.createElement('div');
             titleBar.className = 'analytics-panel-title';
-            titleBar.textContent = 'TOP RELAY KEYS (path 2-char hex) ';
+            const relayPhm = (_deviceMap && _deviceMap.device_info && _deviceMap.device_info.path_hash_mode) || 1;
+            titleBar.textContent = `TOP RELAY KEYS (${relayPhm}-byte path hash) `;
             const noteText = document.createElement('span');
             noteText.className = 'relays-note';
             noteText.textContent = 'lifetime totals · not filtered by time range';

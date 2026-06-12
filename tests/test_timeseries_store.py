@@ -904,5 +904,92 @@ class TestRelayNameUpdateBehaviour(unittest.TestCase):
         self.assertGreaterEqual(second_ls, first_ls)
 
 
+class TestPathTokenChars(unittest.TestCase):
+    """_path_token_chars: hex-char hop-token width from device_info."""
+
+    def setUp(self):
+        self.p = plugin.BasePlugin()
+
+    def test_default_is_one_byte(self):
+        self.p._device_info = {}
+        self.assertEqual(self.p._path_token_chars(), 2)
+
+    def test_modes_map_to_widths(self):
+        for mode, width in ((1, 2), (2, 4), (3, 6)):
+            self.p._device_info = {"path_hash_mode": mode}
+            self.assertEqual(self.p._path_token_chars(), width)
+
+    def test_out_of_range_is_clamped(self):
+        self.p._device_info = {"path_hash_mode": 7}
+        self.assertEqual(self.p._path_token_chars(), 6)
+        self.p._device_info = {"path_hash_mode": 0}
+        self.assertEqual(self.p._path_token_chars(), 2)
+
+    def test_garbage_falls_back_to_one_byte(self):
+        self.p._device_info = {"path_hash_mode": "x"}
+        self.assertEqual(self.p._path_token_chars(), 2)
+
+
+class TestMultiByteRelayKeys(unittest.TestCase):
+    """2-byte path-hash support: _ts_relay_observed, _resolve_relay_key,
+    _q_top_relays width filter."""
+
+    def setUp(self):
+        fd, self.path = tempfile.mkstemp(suffix=".db")
+        os.close(fd)
+        os.unlink(self.path)
+        self.p, self.db = _open_db(self.path)
+
+    def tearDown(self):
+        _close(self.p, self.path)
+
+    def _count_rows(self):
+        with self.p._msgdb_lock:
+            return self.db.execute(
+                "SELECT COUNT(*) FROM ts_relay_keys").fetchone()[0]
+
+    def test_observed_accepts_two_byte_key(self):
+        self.p._ts_relay_observed("a1b2", name=None)
+        self.assertEqual(self._count_rows(), 1)
+
+    def test_observed_accepts_three_byte_key(self):
+        self.p._ts_relay_observed("a1b2c3", name=None)
+        self.assertEqual(self._count_rows(), 1)
+
+    def test_observed_rejects_odd_and_oversize_keys(self):
+        for bad in ("a", "abc", "a1b2c3d4", ""):
+            self.p._ts_relay_observed(bad, name=None)
+        self.assertEqual(self._count_rows(), 0)
+
+    def test_resolve_two_byte_token(self):
+        self.p._prefix_to_name = {"a1b2c3d4e5f6": "NodeA", "0102030405aa": "NodeB"}
+        self.assertEqual(self.p._resolve_relay_key("a1b2"), "NodeA")
+
+    def test_resolve_two_byte_token_ambiguous_returns_none(self):
+        self.p._prefix_to_name = {"a1b2c3d4e5f6": "NodeA", "a1b2ffffffff": "NodeB"}
+        self.assertIsNone(self.p._resolve_relay_key("a1b2"))
+
+    def test_resolve_one_byte_token_still_works(self):
+        self.p._prefix_to_name = {"a1b2c3d4e5f6": "NodeA", "0102030405aa": "NodeB"}
+        self.assertEqual(self.p._resolve_relay_key("a1"), "NodeA")
+
+    def test_top_relays_filters_by_current_token_width(self):
+        now = int(time.time())
+        with self.p._msgdb_lock:
+            for hk, cnt in (("aa", 500), ("bb", 200), ("a1b2", 300), ("c3d4", 100)):
+                self.db.execute(
+                    "INSERT INTO ts_relay_keys (hex_key, name, last_seen, count)"
+                    " VALUES (?,?,?,?)", (hk, None, now, cnt))
+            self.db.commit()
+        # Mode 1 (default): only the 2-char keys.
+        self.p._device_info = {}
+        rows = self.p._q_top_relays("relays", 0, now + 1, 3600, ())["rows"]
+        self.assertEqual({r["hex"] for r in rows}, {"aa", "bb"})
+        # Mode 2: only the 4-char keys.
+        self.p._device_info = {"path_hash_mode": 2}
+        rows = self.p._q_top_relays("relays", 0, now + 1, 3600, ())["rows"]
+        self.assertEqual({r["hex"] for r in rows}, {"a1b2", "c3d4"})
+
+
 if __name__ == "__main__":
     unittest.main()
